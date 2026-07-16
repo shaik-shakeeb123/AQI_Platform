@@ -1,15 +1,37 @@
 from __future__ import annotations
 
+import asyncio
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 from fastapi import HTTPException
 
+from api_layer.exceptions import ExternalAPIException
 from api_layer.logging import get_logger
 from api_layer.api.schemas.aqi_endpoints import WeatherResponse
 from data_sync.clients.openmeteo_weather_client import OpenMeteoWeatherClient
 from data_sync.clients.weather_code_mapping import decode_weather_code
 
 logger = get_logger(__name__)
+
+_WEATHER_CACHE_MAX_SIZE = 1000
+_WEATHER_CACHE_TTL_SECS = 600  # 10 minutes
+
+# cache stores: city_key -> (expires_at, WeatherResponse)
+_weather_cache: OrderedDict[str, tuple[float, WeatherResponse]] = OrderedDict()
+# 256 static locks for sharding to prevent lock leaks
+_city_locks = [asyncio.Lock() for _ in range(256)]
+
+_cache_metrics = {
+    "hit": 0,
+    "miss": 0,
+    "stale": 0,
+    "eviction": 0,
+}
+
+def _get_city_lock(city_key: str) -> asyncio.Lock:
+    return _city_locks[hash(city_key) % 256]
 
 
 def _parse_iso_to_timestamp(iso_str: Optional[str]) -> Optional[int]:
@@ -42,12 +64,29 @@ class WeatherService:
         - Weather condition decoding via WMO weather code mapping
         """
         logger.info("Retrieving current weather for city=%s", city)
+        
+        city_key = city.strip().lower()
+        city_lock = _get_city_lock(city_key)
+        
+        async with city_lock:
+            # 1. Check Cache
+            if city_key in _weather_cache:
+                expires_at, cached_resp = _weather_cache[city_key]
+                if time.monotonic() < expires_at:
+                    _cache_metrics["hit"] += 1
+                    logger.info("Weather cache HIT for city=%s | Metrics: %s", city, _cache_metrics)
+                    # Move to end to maintain LRU
+                    _weather_cache.move_to_end(city_key)
+                    return cached_resp
+            
+            _cache_metrics["miss"] += 1
+            logger.info("Weather cache MISS for city=%s | Metrics: %s", city, _cache_metrics)
 
-        from data_sync.clients.nominatim_client import NominatimGeocoderClient
+            from data_sync.clients.nominatim_client import NominatimGeocoderClient
 
-        # ── Geocode (with rich metadata) ──────────────────────────────────
-        geo = await NominatimGeocoderClient.geocode_address_with_details(city, "")
-        if not geo:
+            # ── Geocode (with rich metadata) ──────────────────────────────────
+            geo = await NominatimGeocoderClient.geocode_address_with_details(city, "")
+            if not geo:
             logger.warning("Geocoding failed for weather query of city=%s", city)
             raise HTTPException(
                 status_code=404,
@@ -64,8 +103,21 @@ class WeatherService:
         try:
             client = OpenMeteoWeatherClient()
             weather_data = await client.fetch_current_weather(lat, lon)
+        except ExternalAPIException as e:
+            # Stale-While-Revalidate: If we have an expired cache, serve it instead of failing
+            if city_key in _weather_cache:
+                _cache_metrics["stale"] += 1
+                logger.warning(
+                    "Open-Meteo API failed (status=%s). Serving STALE cache for city=%s | Metrics: %s", 
+                    e.upstream_status, city, _cache_metrics
+                )
+                _, stale_resp = _weather_cache[city_key]
+                return stale_resp
+            logger.error("Open-Meteo Weather API request failed for coords=(%s, %s): %s", lat, lon, e.detail)
+            # Re-raise to preserve the upstream_status formatting in the JSON response
+            raise e
         except Exception as e:
-            logger.error("Open-Meteo Weather API request failed for coords=(%s, %s): %s", lat, lon, e)
+            logger.error("Unexpected error fetching weather for coords=(%s, %s): %s", lat, lon, e)
             raise HTTPException(
                 status_code=502,
                 detail=f"Failed to fetch weather data for city '{city}' from Open-Meteo: {str(e)}",
@@ -98,7 +150,7 @@ class WeatherService:
         # ── Timezone ──────────────────────────────────────────────────────
         timezone = weather_data.get("timezone")
 
-        return WeatherResponse(
+        response = WeatherResponse(
             # Location
             city=city,
             country=geo.country,
@@ -130,6 +182,14 @@ class WeatherService:
             # Raw (for debugging)
             raw_response=weather_data,
         )
+        
+        # 2. Update Cache & Evict if necessary
+        _weather_cache[city_key] = (time.monotonic() + _WEATHER_CACHE_TTL_SECS, response)
+        if len(_weather_cache) > _WEATHER_CACHE_MAX_SIZE:
+            _weather_cache.popitem(last=False)
+            _cache_metrics["eviction"] += 1
+            
+        return response
 
     @staticmethod
     async def fetch_hourly_forecast(lat: float, lon: float) -> Dict[tuple[int, int, int, int], Dict[str, Any]]:

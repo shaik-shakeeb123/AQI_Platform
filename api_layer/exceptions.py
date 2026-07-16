@@ -33,10 +33,12 @@ class AppException(Exception):
         detail: str = "An unexpected error occurred.",
         status_code: int = 500,
         error_code: str = "INTERNAL_ERROR",
+        upstream_status: int | None = None,
     ) -> None:
         self.detail = detail
         self.status_code = status_code
         self.error_code = error_code
+        self.upstream_status = upstream_status
         super().__init__(self.detail)
 
 
@@ -61,8 +63,15 @@ class ExternalAPIException(AppException):
         self,
         detail: str = "External API request failed.",
         error_code: str = "EXTERNAL_API_ERROR",
+        status_code: int = 502,
+        upstream_status: int | None = None,
     ) -> None:
-        super().__init__(detail=detail, status_code=502, error_code=error_code)
+        super().__init__(
+            detail=detail, 
+            status_code=status_code, 
+            error_code=error_code, 
+            upstream_status=upstream_status
+        )
 
 
 class DuplicateException(AppException):
@@ -95,21 +104,25 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     JSON error response.
     """
     logger.error(
-        "AppException — status=%s error_code=%s detail=%s path=%s",
+        "AppException — status=%s error_code=%s detail=%s path=%s upstream_status=%s",
         exc.status_code,
         exc.error_code,
         exc.detail,
         request.url.path,
+        exc.upstream_status,
     )
+    
+    error_payload = {
+        "code": exc.error_code,
+        "message": exc.detail,
+        "path": request.url.path,
+    }
+    if exc.upstream_status is not None:
+        error_payload["upstream_status"] = exc.upstream_status
+
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": {
-                "code": exc.error_code,
-                "message": exc.detail,
-                "path": request.url.path,
-            }
-        },
+        content={"error": error_payload},
     )
 
 

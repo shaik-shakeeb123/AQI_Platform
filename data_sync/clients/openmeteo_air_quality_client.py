@@ -34,18 +34,25 @@ async def _get_with_retry(url: str, params: dict, *, error_code: str, label: str
     Non-retryable 4xx errors are raised immediately.
     """
     last_exc: Exception | None = None
+    last_status: int | None = None
+    
+    # Extract lat/lon for richer logging if available
+    lat = params.get("latitude", "unknown")
+    lon = params.get("longitude", "unknown")
+
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             client = _get_client()
             response = await client.get(url, params=params)
             if response.status_code in _RETRYABLE_STATUSES:
+                last_status = response.status_code
                 wait = min(
                     _RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0.0, 0.5),
                     _RETRY_MAX_DELAY,
                 )
                 logger.warning(
-                    "%s retryable HTTP %s (attempt %d/%d), retrying in %.2fs",
-                    label, response.status_code, attempt, _MAX_RETRIES, wait,
+                    "%s | lat=%s lon=%s | Attempt %d/%d | HTTP %s | Retry in %.2fs",
+                    label, lat, lon, attempt, _MAX_RETRIES, response.status_code, wait,
                 )
                 await asyncio.sleep(wait)
                 continue
@@ -53,32 +60,55 @@ async def _get_with_retry(url: str, params: dict, *, error_code: str, label: str
             return response.json()
         except httpx.HTTPStatusError as e:
             logger.error(
-                "%s HTTP error (attempt %d/%d): %s — %s",
-                label, attempt, _MAX_RETRIES, e.response.status_code, e.response.text[:200],
+                "%s | lat=%s lon=%s | Attempt %d/%d | HTTP %s | Fatal Error",
+                label, lat, lon, attempt, _MAX_RETRIES, e.response.status_code,
             )
             last_exc = e
             break  # non-retryable 4xx — do not retry
         except httpx.RequestError as e:
             last_exc = e
+            last_status = None
             wait = min(
                 _RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0.0, 0.5),
                 _RETRY_MAX_DELAY,
             )
             logger.warning(
-                "%s connection error (attempt %d/%d): %s — retrying in %.2fs",
-                label, attempt, _MAX_RETRIES, str(e), wait,
+                "%s | lat=%s lon=%s | Attempt %d/%d | %s | Retry in %.2fs",
+                label, lat, lon, attempt, _MAX_RETRIES, e.__class__.__name__, wait,
             )
             if attempt < _MAX_RETRIES:
                 await asyncio.sleep(wait)
 
-    if isinstance(last_exc, httpx.HTTPStatusError):
+    from api_layer.exceptions import ExternalAPIException
+    
+    if last_status == 429:
+        raise ExternalAPIException(
+            detail=f"{label}: HTTP 429 Too Many Requests. The upstream air quality provider is currently rate limiting requests.",
+            error_code=error_code,
+            status_code=502,
+            upstream_status=429,
+        )
+    elif last_status is not None:
+        raise ExternalAPIException(
+            detail=f"{label}: HTTP {last_status}",
+            error_code=error_code,
+            status_code=502,
+            upstream_status=last_status,
+        )
+    elif isinstance(last_exc, httpx.HTTPStatusError):
         raise ExternalAPIException(
             detail=f"{label}: HTTP {last_exc.response.status_code}",
             error_code=error_code,
+            status_code=502,
+            upstream_status=last_exc.response.status_code,
         )
+        
+    err_type = last_exc.__class__.__name__ if last_exc else "Unknown"
+    err_msg = str(last_exc) if last_exc else "unknown error"
     raise ExternalAPIException(
-        detail=f"{label}: connection failed after {_MAX_RETRIES} attempts",
+        detail=f"{label}: connection failed after {_MAX_RETRIES} attempts ({err_type}: {err_msg})",
         error_code=error_code,
+        status_code=502,
     )
 
 
