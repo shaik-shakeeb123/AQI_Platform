@@ -87,11 +87,11 @@ class WeatherService:
             # ── Geocode (with rich metadata) ──────────────────────────────────
             geo = await NominatimGeocoderClient.geocode_address_with_details(city, "")
             if not geo:
-            logger.warning("Geocoding failed for weather query of city=%s", city)
-            raise HTTPException(
-                status_code=404,
-                detail=f"Location geocoding failed for city '{city}'.",
-            )
+                logger.warning("Geocoding failed for weather query of city=%s", city)
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Location geocoding failed for city '{city}'.",
+                )
 
         lat, lon = geo.latitude, geo.longitude
         logger.info(
