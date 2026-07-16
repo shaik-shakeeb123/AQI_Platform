@@ -18,6 +18,7 @@ joblib>=1.4.0
 
 # Authentication
 google-auth>=2.35.0
+requests>=2.32.0
 
 # Testing
 pytest>=8.0.0
