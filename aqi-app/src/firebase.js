@@ -1,1 +1,0 @@
-// Archived: Firebase Authentication has been migrated to PostgreSQL/JWT backend.
