@@ -1,0 +1,127 @@
+.favorite-card{
+
+    background:var(--card);
+
+    border:1px solid var(--border);
+
+    border-radius:24px;
+
+    backdrop-filter:blur(20px);
+
+    -webkit-backdrop-filter:blur(20px);
+
+    padding:24px;
+
+    color:var(--text);
+
+    box-shadow:0 10px 30px rgba(0,0,0,.25);
+
+    height:100%;
+
+    display:flex;
+
+    flex-direction:column;
+
+    transition:.3s;
+
+}
+
+.favorite-card:hover{
+
+    transform:translateY(-4px);
+
+    box-shadow:0 20px 40px rgba(0,0,0,.30);
+
+}
+
+.favorite-card h2{
+
+    font-size:22px;
+
+    margin-bottom:20px;
+
+    font-weight:600;
+
+}
+
+.fav-container{
+
+    display:flex;
+
+    flex-wrap:wrap;
+
+    gap:12px;
+
+}
+
+.fav-btn{
+
+    padding:10px 18px;
+
+    border:none;
+
+    border-radius:24px;
+
+    background:rgba(255,255,255,.08);
+
+    color:var(--text);
+
+    cursor:pointer;
+
+    transition:.25s;
+
+    font-size:14px;
+
+    font-weight:600;
+
+}
+
+.fav-btn:hover{
+
+    transform:translateY(-2px);
+
+    background:var(--accent);
+
+    color:white;
+
+}
+
+.fav-btn.active{
+
+    background:var(--accent);
+
+    color:white;
+
+    box-shadow:0 0 12px rgba(56,189,248,.35);
+
+}
+
+.light .fav-btn{
+
+    background:rgba(0,0,0,.05);
+
+}
+
+.light .fav-btn:hover{
+
+    color:white;
+
+}
+
+@media(max-width:900px){
+
+    .favorite-card{
+
+        padding:20px;
+
+    }
+
+    .fav-btn{
+
+        width:100%;
+
+        justify-content:center;
+
+    }
+
+}

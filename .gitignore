@@ -1,0 +1,61 @@
+# ── Environment & Secrets ──
+.env
+.env.local
+.env.development
+.env.production
+firebase-service-account.json
+*service-account.json
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual Environments ──
+.venv/
+venv/
+ENV/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Testing ──
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Jupyter Notebooks ──
+*.ipynb
+.ipynb_checkpoints/
+
+# ── Scratch / Dev Artifacts ──
+scratch/
+nul
+
+# ── Log Files ──
+*.log
+
+# ── Scheduler Lock Files ──
+scheduler.lock
+data_sync/scheduler.lock
+
+
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── Large Data Files ──
+*.csv
+
+# ── Firebase Service Account Key ──
+keys/firebase-service-account.json

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aqi_platform"
+version = "0.1.0"
+description = "Consolidated AQI Intelligence Platform"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.36",
+    "psycopg2-binary>=2.9.10",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "httpx>=0.28.0",
+    "python-dotenv>=1.0.1",
+    "alembic>=1.14.0",
+    "pyjwt>=2.10.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api_layer*", "database*", "data_sync*", "ml_training*"]

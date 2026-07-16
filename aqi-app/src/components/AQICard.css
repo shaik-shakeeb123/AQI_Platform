@@ -1,0 +1,391 @@
+.aqi-card{
+
+    background:var(--card);
+
+    color:var(--text);
+
+    border:1px solid var(--border);
+
+    border-radius:24px;
+
+    padding:28px;
+
+    box-shadow:0 10px 30px rgba(0,0,0,0.18);
+
+    backdrop-filter:blur(18px);
+
+    height:100%;
+
+    display:flex;
+
+    flex-direction:column;
+
+    justify-content:space-between;
+
+    overflow:hidden;
+
+    position:relative;
+}
+
+.aqi-card h3{
+
+    font-size:24px;
+
+    font-weight:600;
+
+    margin-bottom:20px;
+
+}
+
+.aqi-card h1{
+
+    font-size:72px;
+
+    font-weight:700;
+
+    margin:15px 0;
+
+    text-align:center;
+
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+
+    animation:pulseAQI 2s infinite;
+
+}
+
+.badge{
+
+    display:inline-flex;
+
+    align-items:center;
+
+    justify-content:center;
+
+    padding:12px 28px;
+
+    border-radius:999px;
+
+    color:white;
+
+    font-size:17px;
+
+    font-weight:700;
+
+    letter-spacing:.4px;
+
+    box-shadow:0 8px 20px rgba(0,0,0,.18);
+
+    animation:badgePulse 2.5s infinite;
+
+}
+
+@keyframes badgePulse{
+
+    0%{
+
+        transform:scale(1);
+
+    }
+
+    50%{
+
+        transform:scale(1.03);
+
+    }
+
+    100%{
+
+        transform:scale(1);
+
+    }
+
+}
+
+.aqi-info{
+
+    margin-top:10px;
+
+}
+
+.aqi-info p{
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    margin:12px 0;
+
+    font-size:15px;
+
+    line-height:1.5;
+
+}
+
+.meter-title{
+
+    margin-top:25px;
+
+    margin-bottom:12px;
+
+    font-size:18px;
+
+    font-weight:600;
+
+}
+
+.aqi-meter{
+
+    display:flex;
+
+    overflow:hidden;
+
+    border-radius:12px;
+
+}
+.aqi-card::before{
+
+    content:"";
+
+    position:absolute;
+
+    top:-120%;
+
+    left:-40%;
+
+    width:70%;
+
+    height:320%;
+
+    background:
+
+        linear-gradient(
+
+            90deg,
+
+            transparent,
+
+            rgba(255,255,255,.08),
+
+            transparent
+
+        );
+
+    transform:rotate(25deg);
+
+    transition:.8s;
+
+}
+.aqi-card:hover::before{
+
+    left:130%;
+
+}
+
+.meter-segment{
+
+    flex:1;
+
+    padding:12px 8px;
+
+    font-size:12px;
+
+    font-weight:600;
+
+    color:white;
+
+    text-align:center;
+
+    transition:0.3s;
+    transition:
+
+        opacity .35s,
+
+        transform .35s;
+
+}
+
+.meter-segment:hover{
+
+    transform:scale(1.03);
+     transform:translateY(-3px);
+
+}
+
+.meter-status{
+
+    margin-top:18px;
+
+    text-align:center;
+
+    font-size:16px;
+
+    font-weight:600;
+
+    color:var(--text);
+
+}
+
+@keyframes glowAQI{
+
+    0%{
+
+        filter:brightness(1);
+
+    }
+
+    50%{
+
+        filter:brightness(1.25);
+
+    }
+
+    100%{
+
+        filter:brightness(1);
+
+    }
+
+}
+
+@keyframes pulseAQI{
+
+    0%{
+
+        transform:scale(1);
+
+    }
+
+    50%{
+
+        transform:scale(1.06);
+
+    }
+
+    100%{
+
+        transform:scale(1);
+
+    }
+
+}
+
+@media(max-width:900px){
+
+    .aqi-card{
+
+        padding:22px;
+
+    }
+
+    .aqi-card h1{
+
+        font-size:58px;
+
+    }
+
+    .aqi-card h3{
+
+        font-size:20px;
+
+    }
+
+}
+.aqi-value{
+
+    font-size:78px;
+
+    font-weight:800;
+
+    line-height:1;
+
+    color:var(--accent);
+
+    text-align:center;
+
+    margin:20px 0;
+
+    text-shadow:
+        0 0 18px var(--accent),
+        0 0 40px var(--accent),
+        0 0 60px rgba(56,189,248,.55);
+
+    animation:
+        pulseAQI 2s ease-in-out infinite,
+        glowAQI 3s ease-in-out infinite;
+
+    transition:.3s;
+
+}
+.aqi-meter{
+
+display:flex;
+
+justify-content:space-between;
+
+gap:8px;
+
+margin-top:18px;
+
+}
+
+.meter-item{
+
+flex:1;
+
+display:flex;
+
+flex-direction:column;
+
+align-items:center;
+
+gap:8px;
+
+}
+
+.meter-label{
+
+font-size:11px;
+
+text-align:center;
+
+line-height:1.3;
+
+min-height:32px;
+
+transition:.3s;
+
+}
+
+.meter-segment{
+
+width:100%;
+
+padding:10px 6px;
+
+border-radius:8px;
+
+font-size:11px;
+
+font-weight:600;
+
+text-align:center;
+
+color:#fff;
+
+transition:.3s;
+
+}
+
+.meter-status{
+
+margin-top:15px;
+
+text-align:center;
+
+font-weight:600;
+
+font-size:14px;
+
+}

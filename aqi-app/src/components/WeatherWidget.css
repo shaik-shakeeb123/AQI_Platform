@@ -1,0 +1,219 @@
+.weather-card{
+
+    background:var(--card);
+
+    backdrop-filter:blur(20px);
+
+    -webkit-backdrop-filter:blur(20px);
+
+    border:1px solid var(--border);
+
+    border-radius:24px;
+
+    padding:24px;
+
+    color:var(--text);
+
+    box-shadow:0 10px 30px rgba(0,0,0,0.25);
+
+    height:100%;
+
+    display:flex;
+
+    flex-direction:column;
+
+    transition:0.3s;
+
+}
+
+.weather-card:hover{
+
+    transform:translateY(-4px);
+
+    box-shadow:0 20px 40px rgba(0,0,0,0.30);
+
+}
+
+.weather-header{
+
+    display:flex;
+
+    align-items:center;
+
+    gap:18px;
+
+    margin-bottom:22px;
+
+}
+
+.weather-header img{
+
+    width:80px;
+
+    height:80px;
+
+    filter:drop-shadow(0 0 12px rgba(255,255,255,0.25));
+
+    animation:floatIcon 3s ease-in-out infinite;
+
+}
+
+@keyframes floatIcon{
+
+    0%{
+
+        transform:translateY(0);
+
+    }
+
+    50%{
+
+        transform:translateY(-8px);
+
+    }
+
+    100%{
+
+        transform:translateY(0);
+
+    }
+
+}
+
+.weather-header h2{
+
+    font-size:22px;
+
+    font-weight:600;
+
+    margin-bottom:4px;
+
+}
+
+.weather-desc{
+
+    font-size:15px;
+
+    text-transform:capitalize;
+
+    opacity:0.75;
+
+}
+
+.weather-row{
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    padding:14px 18px;
+
+    margin-bottom:12px;
+
+    border-radius:14px;
+
+    background:rgba(255,255,255,0.06);
+
+    transition:0.3s;
+
+}
+
+.weather-row:last-child{
+
+    margin-bottom:0;
+
+}
+
+.weather-row:hover{
+
+    transform:translateX(5px);
+
+    background:rgba(56,189,248,0.12);
+
+}
+
+.weather-row span:first-child{
+
+    font-size:15px;
+
+    font-weight:600;
+
+}
+
+.weather-row span:last-child{
+
+    font-size:15px;
+
+    font-weight:700;
+
+    color:var(--accent);
+
+    text-align:right;
+
+}
+
+.loading-text{
+
+    flex:1;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    font-size:18px;
+
+    font-weight:500;
+
+}
+
+.light .weather-row{
+
+    background:rgba(0,0,0,0.04);
+
+}
+
+.light .weather-row:hover{
+
+    background:rgba(37,99,235,0.08);
+
+}
+
+@media(max-width:900px){
+
+    .weather-card{
+
+        padding:20px;
+
+    }
+
+    .weather-header{
+
+        gap:14px;
+
+    }
+
+    .weather-header img{
+
+        width:64px;
+
+        height:64px;
+
+    }
+
+    .weather-header h2{
+
+        font-size:20px;
+
+    }
+
+    .weather-row{
+
+        padding:12px 14px;
+
+    }
+
+}

@@ -1,0 +1,30 @@
+{
+  "dataset": "INDIA_AQI_COMPLETE_20251126.csv",
+  "horizon": "6h",
+  "training_timestamp": "2026-06-16T06:35:26.007086Z",
+  "row_count": 673728,
+  "feature_count": 20,
+  "feature_names": [
+    "pm25",
+    "pm10",
+    "co",
+    "no2",
+    "so2",
+    "o3",
+    "temperature",
+    "humidity",
+    "wind_speed",
+    "wind_direction",
+    "pressure",
+    "precipitation",
+    "hour",
+    "day_of_week",
+    "pm25_lag_1",
+    "pm25_lag_3",
+    "pm10_lag_1",
+    "pm25_roll_mean_3",
+    "pm10_roll_mean_3",
+    "pm25_roll_mean_6"
+  ],
+  "model_type": "LightGBM"
+}

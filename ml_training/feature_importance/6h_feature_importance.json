@@ -1,0 +1,82 @@
+[
+  {
+    "feature": "o3",
+    "importance": 505.0
+  },
+  {
+    "feature": "pm25_roll_mean_6",
+    "importance": 479.0
+  },
+  {
+    "feature": "hour",
+    "importance": 401.0
+  },
+  {
+    "feature": "so2",
+    "importance": 161.0
+  },
+  {
+    "feature": "humidity",
+    "importance": 161.0
+  },
+  {
+    "feature": "co",
+    "importance": 156.0
+  },
+  {
+    "feature": "no2",
+    "importance": 150.0
+  },
+  {
+    "feature": "pm25",
+    "importance": 138.0
+  },
+  {
+    "feature": "pressure",
+    "importance": 135.0
+  },
+  {
+    "feature": "temperature",
+    "importance": 127.0
+  },
+  {
+    "feature": "wind_speed",
+    "importance": 114.0
+  },
+  {
+    "feature": "pm10",
+    "importance": 106.0
+  },
+  {
+    "feature": "wind_direction",
+    "importance": 78.0
+  },
+  {
+    "feature": "pm10_roll_mean_3",
+    "importance": 71.0
+  },
+  {
+    "feature": "pm25_lag_3",
+    "importance": 68.0
+  },
+  {
+    "feature": "day_of_week",
+    "importance": 50.0
+  },
+  {
+    "feature": "pm25_lag_1",
+    "importance": 48.0
+  },
+  {
+    "feature": "pm10_lag_1",
+    "importance": 36.0
+  },
+  {
+    "feature": "pm25_roll_mean_3",
+    "importance": 16.0
+  },
+  {
+    "feature": "precipitation",
+    "importance": 0.0
+  }
+]
