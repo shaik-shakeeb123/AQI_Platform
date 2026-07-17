@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Suspense, lazy } from "react";
+import React, { useState, useEffect, Suspense, lazy, useCallback } from "react";
 import "./App.css";
 
 import { useAuth } from "./context/AuthContext";
@@ -243,9 +243,9 @@ const updateSafeTime = (value) => {
 // Flask ML Prediction
 // ======================================
 
-const fetchPrediction = async (cityName, aqiData) => {
+const fetchPrediction = useCallback(async (cityName, aqiData, currentAqiValue) => {
     try {
-        const result = await fetchPredictionData(cityName, aqiData, aqi);
+        const result = await fetchPredictionData(cityName, aqiData, currentAqiValue);
         if (result.success) {
             const values = [
                 result.predictions["1h"],
@@ -261,30 +261,25 @@ const fetchPrediction = async (cityName, aqiData) => {
         console.log("Prediction API Error");
         console.log(err);
     }
-};
+}, []);
 
 // ======================================
 // Common AQI Data Handler
 // ======================================
 
-const processAQIData = async (data, cityName = null) => {
+const processAQIData = useCallback(async (data, cityName = null) => {
 
     if (data.status !== "ok") {
-
-        //console.log("WAQI Error:", data);
         console.error("WAQI Status:", data.status);
         console.error("WAQI Error Data:", data.data);
         console.error("Full Response:", data);
 
         setNotifications((prev) => [
-
             {
                 title: "⚠ AQI Service Unavailable",
                 message: "Unable to fetch live AQI data."
             },
-
             ...prev
-
         ].slice(0,10));
 
         return;
@@ -305,9 +300,9 @@ const processAQIData = async (data, cityName = null) => {
         setLon(data.data.city.geo[1]);
     }
 
-    await fetchPrediction(resolvedCity, data.data);
+    await fetchPrediction(resolvedCity, data.data, value);
 
-};
+}, [fetchPrediction]);
 
 
 
@@ -315,19 +310,20 @@ const processAQIData = async (data, cityName = null) => {
 // Search by City
 // ======================================
 
-const fetchHealthAndSafeWindow = async (selectedCity = city) => {
+const fetchHealthAndSafeWindow = useCallback(async (targetCity) => {
+    if (!targetCity) return;
     setLoadingHealth(true);
     setHealthError(null);
     setLoadingSafeWindow(true);
     setSafeWindowError(null);
     try {
         const [hData, sData] = await Promise.all([
-            getHealthInsights(selectedCity).catch(err => {
+            getHealthInsights(targetCity).catch(err => {
                 console.error("Failed to fetch health insights:", err);
                 setHealthError(err.message || "Failed to load health insights");
                 return null;
             }),
-            getSafeWindow({ city: selectedCity }).catch(err => {
+            getSafeWindow({ city: targetCity }).catch(err => {
                 console.error("Failed to fetch safe outdoor window:", err);
                 setSafeWindowError(err.message || "Failed to load safe outdoor window");
                 return null;
@@ -341,17 +337,18 @@ const fetchHealthAndSafeWindow = async (selectedCity = city) => {
         setLoadingHealth(false);
         setLoadingSafeWindow(false);
     }
-};
+}, []);
 
-const fetchAQI = async (selectedCity = city) => {
+const fetchAQI = useCallback(async (targetCity) => {
+    if (!targetCity) return;
     try {
         setLoading(true);
         setExposureLoading(true);
         setExposureError(null);
 
         const [data, expData] = await Promise.all([
-            getCurrentAQI(selectedCity),
-            getExposureAnalytics(selectedCity).catch(err => {
+            getCurrentAQI(targetCity),
+            getExposureAnalytics(targetCity).catch(err => {
                 console.error("Failed to fetch exposure insights inside fetchAQI:", err);
                 setExposureError(err.message || "Failed to load exposure data");
                 return null;
@@ -359,17 +356,69 @@ const fetchAQI = async (selectedCity = city) => {
         ]);
 
         setExposureData(expData);
-        await processAQIData(data, selectedCity);
-        await fetchHealthAndSafeWindow(selectedCity);
+        await processAQIData(data, targetCity);
+        await fetchHealthAndSafeWindow(targetCity);
     } catch(err) {
         console.log(err);
     } finally {
         setLoading(false);
         setExposureLoading(false);
     }
-};
+}, [processAQIData, fetchHealthAndSafeWindow]);
 
-const fetchAQIByLocation = async (latitude, longitude) => {
+const fetchNearestCityAQI = useCallback(async (latitude, longitude) => {
+    try {
+        let nearestCity = null;
+        let minimumDistance = Number.MAX_VALUE;
+
+        cities.forEach((cityObj) => {
+            const distance = Math.sqrt(
+                Math.pow(latitude - cityObj.lat, 2) +
+                Math.pow(longitude - cityObj.lon, 2)
+            );
+            if (distance < minimumDistance) {
+                minimumDistance = distance;
+                nearestCity = cityObj;
+            }
+        });
+
+        if (!nearestCity) {
+            console.log("No nearest city found. Falling back to Delhi.");
+            setUsingNearestCity(true);
+            await fetchAQI("Delhi");
+            return;
+        }
+
+        console.log("Nearest City:", nearestCity.name);
+        setUsingNearestCity(true);
+
+        setNotifications((prev) => [
+            {
+                title: "📍 Current Location Unavailable",
+                message: `Live AQI is unavailable for your exact GPS location. Displaying data from the nearest monitoring station (${nearestCity.name}).`
+            },
+            ...prev
+        ].slice(0, 10));
+
+        await fetchAQI(nearestCity.name);
+
+    } catch (err) {
+        console.error("Nearest City Error:", err);
+        setUsingNearestCity(true);
+
+        setNotifications((prev) => [
+            {
+                title: "⚠ Unable to Find Nearby Station",
+                message: "Showing AQI for Delhi as a fallback."
+            },
+            ...prev
+        ].slice(0, 10));
+
+        await fetchAQI("Delhi");
+    }
+}, [fetchAQI]);
+
+const fetchAQIByLocation = useCallback(async (latitude, longitude) => {
     try {
         setLoading(true);
         setExposureLoading(true);
@@ -397,95 +446,7 @@ const fetchAQIByLocation = async (latitude, longitude) => {
         setLoading(false);
         setExposureLoading(false);
     }
-};
-
-const fetchNearestCityAQI = async (latitude, longitude) => {
-
-    try {
-
-        let nearestCity = null;
-
-        let minimumDistance = Number.MAX_VALUE;
-
-        cities.forEach((city) => {
-
-            const distance = Math.sqrt(
-
-                Math.pow(latitude - city.lat, 2) +
-
-                Math.pow(longitude - city.lon, 2)
-
-            );
-
-            if (distance < minimumDistance) {
-
-                minimumDistance = distance;
-
-                nearestCity = city;
-
-            }
-
-        });
-
-        if (!nearestCity) {
-
-            console.log("No nearest city found. Falling back to Delhi.");
-
-            setUsingNearestCity(true);
-
-            await fetchAQI("Delhi");
-
-            return;
-
-        }
-
-        console.log("Nearest City:", nearestCity.name);
-
-        setUsingNearestCity(true);
-
-        setNotifications((prev) => [
-
-            {
-
-                title: "📍 Current Location Unavailable",
-
-                message: `Live AQI is unavailable for your exact GPS location. Displaying data from the nearest monitoring station (${nearestCity.name}).`
-
-            },
-
-            ...prev
-
-        ].slice(0, 10));
-
-        await fetchAQI(nearestCity.name);
-
-    }
-
-    catch (err) {
-
-        console.error("Nearest City Error:", err);
-
-        setUsingNearestCity(true);
-
-        setNotifications((prev) => [
-
-            {
-
-                title: "⚠ Unable to Find Nearby Station",
-
-                message: "Showing AQI for Delhi as a fallback."
-
-            },
-
-            ...prev
-
-        ].slice(0, 10));
-
-        await fetchAQI("Delhi");
-
-    }
-
-};
+}, [processAQIData, fetchHealthAndSafeWindow, fetchNearestCityAQI]);
 const showToast = (
 
     type,
@@ -565,7 +526,7 @@ useEffect(() => {
 
 );
 
-}, []);
+}, [fetchAQI, fetchAQIByLocation]);
 
 // ======================================
 // Load Saved Theme
@@ -641,8 +602,9 @@ useEffect(() => {
 
     lon,
 
-    city
-
+    city,
+    fetchAQI,
+    fetchAQIByLocation
 ]);
 
 useEffect(() => {

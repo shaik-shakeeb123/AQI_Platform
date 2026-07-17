@@ -42,7 +42,6 @@ function AQIGauge({ aqi, exposureData, loading, error }) {
         eyes,
         exercise,
         outdoor,
-        mask,
         recovery_tips: tips = []
     } = exposureData;
 

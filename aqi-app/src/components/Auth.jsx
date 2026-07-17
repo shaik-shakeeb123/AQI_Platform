@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 import "./Auth.css";
 
@@ -35,6 +35,22 @@ function Auth() {
     "Daily AQI Summary"
   ];
 
+  const handleGoogleCredentialResponse = useCallback(async (response) => {
+    try {
+      setLoading(true);
+      setMessage("");
+      await googleLogin(response.credential);
+      setMessage("Login Successful.");
+      setMessageType("success");
+    } catch (err) {
+      console.error(err);
+      setMessage(err.message || "Google authentication failed.");
+      setMessageType("error");
+    } finally {
+      setLoading(false);
+    }
+  }, [googleLogin]);
+
   // Dynamic injection of Google Identity Services SDK
   useEffect(() => {
     const script = document.createElement("script");
@@ -59,23 +75,7 @@ function Auth() {
     return () => {
       document.body.removeChild(script);
     };
-  }, []);
-
-  const handleGoogleCredentialResponse = async (response) => {
-    try {
-      setLoading(true);
-      setMessage("");
-      await googleLogin(response.credential);
-      setMessage("Login Successful.");
-      setMessageType("success");
-    } catch (err) {
-      console.error(err);
-      setMessage(err.message || "Google authentication failed.");
-      setMessageType("error");
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [handleGoogleCredentialResponse]);
 
   const toggleHealth = (item) => {
     setHealth((prev) =>
