@@ -1,0 +1,42 @@
+name: Scheduled AQI Ingestion
+
+on:
+  schedule:
+    # Runs every 30 minutes at minutes 0 and 30 past the hour
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Allows manual execution from the GitHub Actions UI
+
+jobs:
+  ingest_aqi_data:
+    name: Run AQI Ingestion Job
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute One-Time Ingestion
+        env:
+          # Essential secrets that must be exact for DB and API access
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
+          
+          # Pydantic requires these variables to be present during initialization.
+          # Since the ingestion job does not handle OAuth or JWTs, these can safely
+          # be populated with dummy strings in GitHub Secrets if you prefer not to
+          # duplicate your real production keys here.
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+        run: |
+          python data_sync/run_once.py

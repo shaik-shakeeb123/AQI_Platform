@@ -34,7 +34,7 @@ except Exception:
 configure_logging()
 logger = get_logger("scheduler")
 
-async def run_ingestion_job() -> None:
+async def run_ingestion_job() -> bool:
     """Run incremental AQI ingestion."""
     settings = get_settings()
     target_records = settings.SCHEDULED_TARGET_RECORDS
@@ -50,11 +50,13 @@ async def run_ingestion_job() -> None:
         service = POCSyncService(db)
         res = await service.sync_openaq_test(target_records=target_records, batch_size=batch_size)
         logger.info("Scheduled ingestion completed successfully. Summary: %s", res)
+        return True
     except asyncio.CancelledError:
         logger.info("Ingestion run was cancelled.")
         raise
     except Exception as err:
         logger.exception("Error occurred during scheduled ingestion run: %s", str(err))
+        return False
     finally:
         db.close()
 
