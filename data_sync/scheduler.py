@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import asyncio
+import signal
 from datetime import datetime, timezone
 
 # Add AQI_Backend root to system path to ensure reliable package imports
@@ -23,15 +24,6 @@ from database.connection import SessionLocal
 from data_sync.sync_service import POCSyncService
 from api_layer.logging import configure_logging, get_logger
 
-# Verify script is running inside a virtual environment (.venv)
-if sys.prefix == sys.base_prefix:
-    print(
-        "CRITICAL ERROR: Ingestion scheduler must be run inside the virtual environment (.venv).\n"
-        "Please execute using: .venv\\Scripts\\python.exe data_sync/scheduler.py",
-        file=sys.stderr
-    )
-    sys.exit(1)
-
 # Enable unbuffered / line-buffered output for real-time logging
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -42,58 +34,12 @@ except Exception:
 configure_logging()
 logger = get_logger("scheduler")
 
-LOCK_FILE = "scheduler.lock"
-
-
 async def run_ingestion_job() -> None:
-    """Check lock file status, run incremental AQI ingestion, and release lock."""
+    """Run incremental AQI ingestion."""
     settings = get_settings()
-    lock_threshold = settings.LOCK_FILE_AGE_THRESHOLD_SECS
     target_records = settings.SCHEDULED_TARGET_RECORDS
     batch_size = settings.SCHEDULED_BATCH_SIZE
 
-    # 1. Lock File Check (Overlap Prevention & Crash Recovery)
-    if os.path.exists(LOCK_FILE):
-        try:
-            mtime = os.path.getmtime(LOCK_FILE)
-            age = time.time() - mtime
-            if age > lock_threshold:
-                logger.warning(
-                    "Stale lock file found (age: %.1fs, threshold: %ds). "
-                    "Recovering from previous crash by deleting stale lock and proceeding.",
-                    age,
-                    lock_threshold,
-                )
-                try:
-                    os.remove(LOCK_FILE)
-                except Exception as err:
-                    logger.error("Failed to remove stale lock file: %s", str(err))
-                    return
-            else:
-                logger.warning(
-                    "Active lock file found (age: %.1fs, threshold: %ds). "
-                    "Ingestion run is already in progress or overlapping. Skipping this run.",
-                    age,
-                    lock_threshold,
-                )
-                return
-        except Exception as err:
-            logger.error("Failed checking lock file: %s", str(err))
-            return
-
-    # 2. Lock Acquisition
-    try:
-        with open(LOCK_FILE, "w") as f:
-            f.write(
-                f"PID: {os.getpid()}\n"
-                f"Started at: {datetime.now(timezone.utc).isoformat()}\n"
-            )
-        logger.info("Acquired lock file '%s' for current ingestion run.", LOCK_FILE)
-    except Exception as err:
-        logger.error("Failed to create lock file: %s. Skipping ingestion run.", str(err))
-        return
-
-    # 3. DB Session & Service Run
     db = SessionLocal()
     try:
         logger.info(
@@ -104,48 +50,74 @@ async def run_ingestion_job() -> None:
         service = POCSyncService(db)
         res = await service.sync_openaq_test(target_records=target_records, batch_size=batch_size)
         logger.info("Scheduled ingestion completed successfully. Summary: %s", res)
+    except asyncio.CancelledError:
+        logger.info("Ingestion run was cancelled.")
+        raise
     except Exception as err:
         logger.exception("Error occurred during scheduled ingestion run: %s", str(err))
     finally:
         db.close()
-        # 4. Lock Release
-        try:
-            if os.path.exists(LOCK_FILE):
-                os.remove(LOCK_FILE)
-                logger.info("Released lock file '%s'.", LOCK_FILE)
-        except Exception as err:
-            logger.error("Failed to remove lock file during cleanup: %s", str(err))
 
 
 async def main() -> None:
     """Async main loop that sleeps for the configured interval between runs."""
+    loop = asyncio.get_running_loop()
+    shutdown_event = asyncio.Event()
+    
+    def handle_sigterm():
+        logger.info("Received SIGTERM from Render. Initiating cooperative shutdown...")
+        shutdown_event.set()
+            
+    try:
+        loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+    except NotImplementedError:
+        # add_signal_handler is not implemented on Windows natively
+        pass
+
     settings = get_settings()
     interval = settings.INGESTION_INTERVAL_SECONDS
     logger.info(
         "Starting Standalone Ingestion Scheduler. Interval: %d seconds. "
-        "Target Locations: %d. Lock Threshold: %d seconds.",
+        "Target Locations: %d.",
         interval,
         settings.SCHEDULED_TARGET_RECORDS,
-        settings.LOCK_FILE_AGE_THRESHOLD_SECS,
     )
 
-    while True:
+    while not shutdown_event.is_set():
         try:
             start_time = time.time()
             await run_ingestion_job()
+
+            if shutdown_event.is_set():
+                logger.info("Shutdown requested. Exiting scheduler loop cleanly.")
+                break
 
             # Dynamic sleep calculation to respect interval precisely
             elapsed = time.time() - start_time
             sleep_time = max(0.1, interval - elapsed)
             logger.info("Next ingestion run scheduled in %.1f seconds.", sleep_time)
-            await asyncio.sleep(sleep_time)
+            
+            # Cooperative sleep: wait_for will raise TimeoutError if the time expires without shutdown
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_time)
+                # If we get here without TimeoutError, shutdown_event was set during sleep
+                logger.info("Shutdown requested during sleep. Exiting scheduler loop cleanly.")
+                break
+            except asyncio.TimeoutError:
+                pass
+                
         except asyncio.CancelledError:
             logger.info("Scheduler received cancellation signal. Exiting.")
             break
         except Exception as err:
             logger.exception("Unexpected error in scheduler loop: %s", str(err))
-            # Prevent rapid failure spinning
-            await asyncio.sleep(10)
+            if not shutdown_event.is_set():
+                # Prevent rapid failure spinning but still wake on shutdown
+                try:
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=10)
+                    break
+                except asyncio.TimeoutError:
+                    pass
 
 
 if __name__ == "__main__":
