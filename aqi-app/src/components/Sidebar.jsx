@@ -1,4 +1,4 @@
-import React from "react";
+import React, { startTransition } from "react";
 
 import "./Sidebar.css";
 
@@ -64,13 +64,11 @@ page==="dashboard"
 }
 
 onClick={()=>
-
+startTransition(() => {
 setPage(
-
 "dashboard"
-
 )
-
+})
 }
 
 >
@@ -100,13 +98,11 @@ page==="alerts"
 }
 
 onClick={()=>
-
+startTransition(() => {
 setPage(
-
 "alerts"
-
 )
-
+})
 }
 
 >
@@ -131,9 +127,9 @@ page==="heatmap"
 }
 
 onClick={()=>
-
+startTransition(() => {
 setPage("heatmap")
-
+})
 }
 
 >
@@ -158,13 +154,11 @@ page==="route"
 }
 
 onClick={()=>
-
+startTransition(() => {
 setPage(
-
 "route"
-
 )
-
+})
 }
 
 >
@@ -195,13 +189,11 @@ page==="notifications"
 }
 
 onClick={()=>
-
+startTransition(() => {
 setPage(
-
 "notifications"
-
 )
-
+})
 }
 
 >
@@ -233,13 +225,11 @@ page==="profile"
 }
 
 onClick={()=>
-
+startTransition(() => {
 setPage(
-
 "profile"
-
 )
-
+})
 }
 
 >
@@ -271,13 +261,11 @@ page==="settings"
 }
 
 onClick={()=>
-
+startTransition(() => {
 setPage(
-
 "settings"
-
 )
-
+})
 }
 
 >

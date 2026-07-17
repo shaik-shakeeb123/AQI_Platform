@@ -23,6 +23,7 @@ import TopPollutant from "./components/TopPollutant";
 import AISummary from "./components/AISummary";
 import CountdownTimer from "./components/CountdownTimer";
 import PageWrapper from "./components/PageWrapper";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { getCurrentAQI, getCurrentAQIByLocation, fetchPredictionData, getExposureAnalytics, getHealthInsights, getSafeWindow } from "./services/backendApi";
 
 // Lazy Loaded Components
@@ -652,6 +653,7 @@ setPage={setPage}
 
 />
 
+<ErrorBoundary>
 <div className="app">
 <header className="hero-header">
 
@@ -1214,6 +1216,8 @@ aqi!==null &&
 )
 
 }
+}
+<Suspense fallback={<div className="loading-spinner" style={{margin: 'auto', padding: '50px'}}>Loading Page...</div>}>
 {
 
 page==="alerts"
@@ -1385,13 +1389,12 @@ onClick={()=>setShowAuth(false)}
     notification={toast}
     onClose={() => setToast(null)}
 />
-
 </div>
-
 </div>
-
 }
+</Suspense>
 </div>
+</ErrorBoundary>
 </div>
 
 );
