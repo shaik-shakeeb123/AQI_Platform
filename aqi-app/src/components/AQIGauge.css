@@ -1,0 +1,307 @@
+.gauge-card{
+
+    background:var(--card);
+
+    backdrop-filter:blur(20px);
+
+    -webkit-backdrop-filter:blur(20px);
+
+    border:1px solid var(--border);
+
+    border-radius:24px;
+
+    padding:24px;
+
+    color:var(--text);
+
+    box-shadow:0 10px 30px rgba(0,0,0,0.25);
+
+    height:100%;
+
+    display:flex;
+
+    flex-direction:column;
+
+    transition:.3s;
+
+}
+
+.gauge-card:hover{
+
+    transform:translateY(-4px);
+
+    box-shadow:0 20px 40px rgba(0,0,0,.30);
+
+}
+
+.gauge-card h2{
+
+    font-size:22px;
+
+    font-weight:600;
+
+    margin-bottom:22px;
+
+}
+
+/* ======================
+   Exposure Score
+====================== */
+
+.gauge-score{
+
+    text-align:center;
+
+    padding:22px;
+
+    border-radius:20px;
+
+    color:white;
+
+    margin-bottom:24px;
+
+    box-shadow:0 8px 24px rgba(0,0,0,.18);
+
+}
+
+.gauge-score h1{
+
+    font-size:54px;
+
+    font-weight:700;
+
+    margin-bottom:6px;
+
+}
+
+.gauge-score p{
+
+    font-size:16px;
+
+    opacity:.95;
+
+}
+
+/* ======================
+   Organ Grid
+====================== */
+
+.organ-grid{
+
+    display:grid;
+
+    grid-template-columns:repeat(2,1fr);
+
+    gap:16px;
+
+    margin-bottom:24px;
+
+}
+
+.organ-card{
+
+    background:rgba(255,255,255,.06);
+
+    border-radius:16px;
+
+    padding:18px;
+
+    text-align:center;
+
+    transition:.3s;
+
+}
+
+.organ-card:hover{
+
+    transform:translateY(-3px);
+
+    background:rgba(56,189,248,.12);
+
+}
+
+.organ-card h3{
+
+    margin:10px 0 6px;
+
+    font-size:16px;
+
+    color:var(--accent);
+
+}
+
+.organ-card p{
+
+    font-size:14px;
+
+    line-height:1.6;
+
+}
+
+/* ======================
+   Information Boxes
+====================== */
+
+.info-box{
+
+    background:rgba(255,255,255,.06);
+
+    border-radius:14px;
+
+    padding:16px;
+
+    margin-bottom:16px;
+
+    transition:.3s;
+
+}
+
+.info-box:hover{
+
+    transform:translateX(5px);
+
+    background:rgba(56,189,248,.12);
+
+}
+
+.info-box strong{
+
+    display:block;
+
+    margin-bottom:8px;
+
+    color:var(--accent);
+
+}
+
+.info-box p{
+
+    margin:0;
+
+    line-height:1.7;
+
+}
+
+/* ======================
+   Tips
+====================== */
+
+.tips-box{
+
+    margin-top:auto;
+
+    background:rgba(34,197,94,.08);
+
+    border-left:4px solid #22c55e;
+
+    border-radius:14px;
+
+    padding:18px;
+
+}
+
+.tips-box h3{
+
+    color:var(--accent);
+
+    margin-bottom:14px;
+
+    font-size:18px;
+
+}
+
+.tips-box ul{
+
+    padding-left:20px;
+
+    margin:0;
+
+}
+
+.tips-box li{
+
+    margin-bottom:10px;
+
+    line-height:1.7;
+
+    font-size:15px;
+
+}
+
+/* ======================
+   Loading
+====================== */
+
+.loading-text{
+
+    flex:1;
+
+    display:flex;
+
+    justify-content:center;
+
+    align-items:center;
+
+    font-size:18px;
+
+    font-weight:500;
+
+}
+
+/* ======================
+   Light Theme
+====================== */
+
+.light .organ-card,
+
+.light .info-box{
+
+    background:rgba(0,0,0,.04);
+
+}
+
+.light .organ-card:hover,
+
+.light .info-box:hover{
+
+    background:rgba(37,99,235,.08);
+
+}
+
+.light .tips-box{
+
+    background:rgba(34,197,94,.08);
+
+}
+
+/* ======================
+   Responsive
+====================== */
+
+@media(max-width:900px){
+
+    .gauge-card{
+
+        padding:20px;
+
+    }
+
+    .organ-grid{
+
+        grid-template-columns:1fr;
+
+    }
+
+    .gauge-score h1{
+
+        font-size:42px;
+
+    }
+
+    .gauge-card h2{
+
+        font-size:20px;
+
+    }
+
+}
