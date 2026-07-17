@@ -155,8 +155,30 @@ class POCSyncService:
                 except Exception as w_err:
                     logger.warning("Failed to fetch batch weather: %s", str(w_err))
 
-            # 3. Process Non-Duplicate Candidates Sequential Loop (Rate limited measurements fetches)
-            for raw_loc in candidates:
+            # 2.5 Concurrent Measurement Prefetching
+            # Safe bounded concurrency for OpenAQ (10 reqs) isolates IO waits from DB processing
+            fetch_semaphore = asyncio.Semaphore(10)
+            
+            async def fetch_meas_safe(loc_id: int, loc_name: str) -> Optional[Dict[str, Any]]:
+                async with fetch_semaphore:
+                    try:
+                        return await self.openaq_client.fetch_latest_measurements(loc_id)
+                    except Exception as ex:
+                        logger.error("Failed fetching measurements for %s (ID: %s): %s", loc_name, loc_id, str(ex))
+                        return None
+            
+            logger.info("Concurrently fetching measurements for %d non-duplicate candidates...", len(candidates))
+            fetch_start = time.time()
+            meas_tasks = [
+                fetch_meas_safe(c.get("id"), c.get("name") or "Unknown Station") 
+                for c in candidates
+            ]
+            meas_results_batch = await asyncio.gather(*meas_tasks)
+            api_requests_count += len(candidates)
+            logger.info("Measurement prefetching completed in %.2fs", time.time() - fetch_start)
+
+            # 3. Process Non-Duplicate Candidates Sequential Loop (Preserves SQLAlchemy Safety)
+            for idx, raw_loc in enumerate(candidates):
                 if stored_count >= target_records:
                     break
 
@@ -166,41 +188,39 @@ class POCSyncService:
                 latitude = coordinates.get("latitude")
                 longitude = coordinates.get("longitude")
 
-                # Resolve City via Hybrid Resolution Strategy
-                from data_sync.data_processor import extract_city_from_name
-                city = raw_loc.get("locality") or (raw_loc.get("city", {}) or {}).get("name")
-                
-                if not city or city.lower() == "unknown":
-                    parsed = extract_city_from_name(location_name)
-                    if parsed and parsed.lower() != "unknown":
-                        city = parsed
-                        resolved_via_parser_count += 1
-                    else:
-                        resolved_city = None
-                        if latitude is not None and longitude is not None:
-                            resolved_city = await self.geocoder_client.reverse_geocode_city(latitude, longitude)
-                        if resolved_city:
-                            city = resolved_city
-                            resolved_via_nominatim_count += 1
-                        else:
-                            city = "Unknown"
-                else:
-                    resolved_via_parser_count += 1
-
                 # Parse Sensor maps via DataProcessor
                 sensor_map = DataProcessor.parse_sensor_map(raw_loc)
 
                 try:
-                    # Pace requests to respect OpenAQ rate limits (60 requests/minute)
-                    await asyncio.sleep(1.0)
+                    raw_meas = meas_results_batch[idx]
+                    if not raw_meas:
+                        logger.warning("Measurement prefetch failed for %s", location_name)
+                        failed_count += 1
+                        continue
 
-                    # Fetch latest measurements for this location
-                    logger.info("Fetching measurements for location %s (ID: %s)", location_name, location_id)
-                    raw_meas = await self.openaq_client.fetch_latest_measurements(location_id)
-                    api_requests_count += 1
-                    
                     meas_results = raw_meas.get("results", [])
                     fetched_count += 1  # processed one location candidate
+
+                    # Resolve City via Hybrid Resolution Strategy sequentially (respects Nominatim 1req/s limit)
+                    from data_sync.data_processor import extract_city_from_name
+                    city = raw_loc.get("locality") or (raw_loc.get("city", {}) or {}).get("name")
+                    
+                    if not city or city.lower() == "unknown":
+                        parsed = extract_city_from_name(location_name)
+                        if parsed and parsed.lower() != "unknown":
+                            city = parsed
+                            resolved_via_parser_count += 1
+                        else:
+                            resolved_city = None
+                            if latitude is not None and longitude is not None:
+                                resolved_city = await self.geocoder_client.reverse_geocode_city(latitude, longitude)
+                            if resolved_city:
+                                city = resolved_city
+                                resolved_via_nominatim_count += 1
+                            else:
+                                city = "Unknown"
+                    else:
+                        resolved_via_parser_count += 1
 
                     # Process pollutant readings via DataProcessor
                     pollutants, recorded_at = DataProcessor.process_measurements(meas_results, sensor_map)

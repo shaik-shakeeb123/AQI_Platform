@@ -41,8 +41,8 @@ class Settings(BaseSettings):
 
     # ── Scheduled Ingestion Settings ────────────────────────────────────
     INGESTION_INTERVAL_SECONDS: int = 1800
-    SCHEDULED_TARGET_RECORDS: int = 20
-    SCHEDULED_BATCH_SIZE: int = 5
+    SCHEDULED_TARGET_RECORDS: int = 1000
+    SCHEDULED_BATCH_SIZE: int = 100
     LOCK_FILE_AGE_THRESHOLD_SECS: int = 3600
 
     # ── ML Model Configuration ──────────────────────────────────────────
