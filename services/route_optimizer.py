@@ -31,9 +31,9 @@ def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 NOMINATIM_BASE = "https://nominatim.openstreetmap.org"
-NOMINATIM_HEADERS = {"User-Agent": "AQI-Platform-Student-Project/1.0"}
+NOMINATIM_HEADERS = {"User-Agent": "AQI-Platform-Student-Project/1.0 (admin@aqiplatform.com)"}
 NOMINATIM_SLEEP_SECS = 0.5  # Nominatim allows 1 req/s; 0.5s is safe with retries
-OSRM_BASE = "http://router.project-osrm.org"
+OSRM_BASE = "https://router.project-osrm.org"
 OPEN_METEO_AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 OPEN_METEO_AQ_FIELDS = "pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone"
 STATION_RADIUS_LIMIT_KM = 3.0
@@ -182,26 +182,47 @@ class RouteOptimizerService:
             queries_to_try.append(f"{query}, {city_context}")
         queries_to_try.append(query)
 
+        last_exception = None
         for q in queries_to_try:
+            url = f"{NOMINATIM_BASE}/search"
+            params = {"q": q, "format": "json", "limit": 1}
+            logger.info(f"Nominatim Request URL: {url} | Params: {params} | Headers: {NOMINATIM_HEADERS}")
+            start_t = time.time()
             try:
                 resp = await client.get(
-                    f"{NOMINATIM_BASE}/search",
-                    params={"q": q, "format": "json", "limit": 1},
+                    url,
+                    params=params,
                     headers=NOMINATIM_HEADERS,
                     timeout=5.0,
                 )
+                duration = round((time.time() - start_t) * 1000, 2)
+                logger.info(f"Nominatim Response Status: {resp.status_code} | Duration: {duration}ms | Body: {resp.text}")
+                
                 if resp.status_code == 200:
                     results = resp.json()
                     if results:
                         lat = float(results[0]["lat"])
                         lon = float(results[0]["lon"])
                         _geocode_cache[key] = (lat, lon)
-                        # Evict oldest entry if cache is full
                         if len(_geocode_cache) > _GEOCODE_CACHE_MAX:
                             _geocode_cache.popitem(last=False)
                         return lat, lon
+                    else:
+                        last_exception = Exception(f"Nominatim returned an empty result for '{q}'")
+                else:
+                    raise Exception(f"Nominatim returned HTTP {resp.status_code}: {resp.text}")
+                    
+            except httpx.TimeoutException:
+                duration = round((time.time() - start_t) * 1000, 2)
+                logger.error(f"Nominatim Request timed out after {duration}ms")
+                raise Exception("Nominatim request timed out")
             except Exception as e:
-                logger.warning("Nominatim geocode failed for '%s': %s", q, e)
+                logger.error(f"Nominatim Request Failed: {str(e)}")
+                raise e
+        
+        # If we exhausted queries and only had empty results
+        if last_exception:
+            raise last_exception
 
         _geocode_cache[key] = None
         if len(_geocode_cache) > _GEOCODE_CACHE_MAX:
@@ -220,10 +241,19 @@ class RouteOptimizerService:
             f"{start_lon},{start_lat};{dest_lon},{dest_lat}"
         )
         params = {"overview": "full", "geometries": "geojson", "alternatives": "false"}
+        logger.info(f"OSRM Request URL: {url} | Params: {params}")
+        start_t = time.time()
         try:
             resp = await client.get(url, params=params, timeout=10.0)
+            duration = round((time.time() - start_t) * 1000, 2)
+            logger.info(f"OSRM Response Status: {resp.status_code} | Duration: {duration}ms | Body (truncated): {resp.text[:200]}")
+            
             if resp.status_code == 200:
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    raise Exception("OSRM returned invalid JSON")
+                
                 routes = data.get("routes", [])
                 if routes:
                     primary = routes[0]
@@ -236,9 +266,22 @@ class RouteOptimizerService:
                         "geometry": formatted,
                         "raw_route_data": primary,
                     }
+                else:
+                    raise Exception("OSRM returned an empty route result")
+            else:
+                raise Exception(f"OSRM returned HTTP {resp.status_code}: {resp.text}")
+                
+        except httpx.TimeoutException:
+            duration = round((time.time() - start_t) * 1000, 2)
+            logger.error(f"OSRM Request timed out after {duration}ms")
+            raise Exception("OSRM request timed out")
         except Exception as e:
-            logger.error("OSRM route query failed: %s", e)
-        return None
+            if "OSRM returned HTTP" in str(e) or "invalid JSON" in str(e) or "empty route result" in str(e) or "timed out" in str(e):
+                logger.error(f"OSRM Request Failed: {str(e)}")
+                raise e
+            else:
+                logger.error(f"OSRM Request Failed (Connection): {str(e)}")
+                raise Exception(f"OSRM connection failed: {str(e)}")
 
     @staticmethod
     async def _fetch_meteo_batch(
@@ -797,4 +840,4 @@ class RouteOptimizerService:
 
         except Exception as e:
             logger.error("Unexpected error in optimized exposure route: %s", e, exc_info=True)
-            return None
+            raise e

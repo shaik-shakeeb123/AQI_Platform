@@ -50,17 +50,23 @@ class RouteService:
         """Call route optimization engine and map/format optimized route suggestions."""
         logger.info(f"Querying optimized route. City context: {payload.city}")
 
-        route_data = await RouteOptimizerService.get_optimized_exposure_route(
-            city=payload.city,
-            start_point=payload.start_point,
-            destination=payload.destination,
-            db=db,
-        )
+        try:
+            route_data = await RouteOptimizerService.get_optimized_exposure_route(
+                city=payload.city,
+                start_point=payload.start_point,
+                destination=payload.destination,
+                db=db,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=502,
+                detail=str(e)
+            )
 
         if not route_data:
             raise HTTPException(
                 status_code=502,
-                detail="External OSRM or Nominatim routing/geocoding service failed."
+                detail="External routing/geocoding service failed to return data."
             )
 
         db_city = route_data.get("resolved_city") or payload.city or "Unknown Location"
