@@ -90,6 +90,9 @@ async def get_safe_window(
     db: Session = Depends(get_db)
 ) -> SafeWindowResponse:
     """Identify the safest outdoor window for a city by simulating future AQI trends."""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"[SafeWindow] Request received at endpoint: {payload.city}")
     repo = PredictionRepository(db)
     service = SafeWindowService(repo)
     default_model = getattr(request.app.state, "model", None)

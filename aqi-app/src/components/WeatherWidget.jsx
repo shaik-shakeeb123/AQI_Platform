@@ -52,28 +52,19 @@ function WeatherWidget({
 
 
 
-    const formatTime = (timestamp) => {
-
+    const formatTime = (timestamp, timeZone) => {
         if (!timestamp) return "--";
-
-        return new Date(
-
-            timestamp * 1000
-
-        ).toLocaleTimeString(
-
-            [],
-
-            {
-
-                hour: "2-digit",
-
-                minute: "2-digit"
-
-            }
-
-        );
-
+        
+        const options = {
+            hour: "2-digit",
+            minute: "2-digit"
+        };
+        
+        if (timeZone) {
+            options.timeZone = timeZone;
+        }
+        
+        return new Date(timestamp * 1000).toLocaleTimeString([], options);
     };
 
 
@@ -241,9 +232,7 @@ function WeatherWidget({
                 </span>
 
                 <span>
-
-                    {weather.wind?.speed ?? "--"} m/s
-
+                    {weather.wind?.speed ?? "--"} km/h
                 </span>
 
             </div>
@@ -295,9 +284,7 @@ function WeatherWidget({
                 </span>
 
                 <span>
-
-                    {formatTime(weather.sys?.sunrise)}
-
+                    {formatTime(weather.sys?.sunrise, weather.timezone)}
                 </span>
 
             </div>
@@ -313,9 +300,7 @@ function WeatherWidget({
                 </span>
 
                 <span>
-
-                    {formatTime(weather.sys?.sunset)}
-
+                    {formatTime(weather.sys?.sunset, weather.timezone)}
                 </span>
 
             </div>

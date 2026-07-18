@@ -34,7 +34,7 @@ def _get_city_lock(city_key: str) -> asyncio.Lock:
     return _city_locks[hash(city_key) % 256]
 
 
-def _parse_iso_to_timestamp(iso_str: Optional[str]) -> Optional[int]:
+def _parse_iso_to_timestamp(iso_str: Optional[str], tz_str: Optional[str] = None) -> Optional[int]:
     """Convert an ISO 8601 datetime string to a Unix timestamp (seconds).
 
     Returns ``None`` when *iso_str* is ``None`` or cannot be parsed.
@@ -43,9 +43,12 @@ def _parse_iso_to_timestamp(iso_str: Optional[str]) -> Optional[int]:
         return None
     try:
         dt = datetime.fromisoformat(iso_str)
+        if tz_str:
+            from zoneinfo import ZoneInfo
+            dt = dt.replace(tzinfo=ZoneInfo(tz_str))
         return int(dt.timestamp())
-    except (ValueError, TypeError):
-        logger.warning("Could not parse ISO timestamp: %s", iso_str)
+    except (ValueError, TypeError, Exception) as e:
+        logger.warning("Could not parse ISO timestamp %s with tz %s: %s", iso_str, tz_str, str(e))
         return None
 
 
@@ -175,8 +178,8 @@ class WeatherService:
             # Solar
             sunrise=sunrise_str,
             sunset=sunset_str,
-            sunrise_timestamp=_parse_iso_to_timestamp(sunrise_str),
-            sunset_timestamp=_parse_iso_to_timestamp(sunset_str),
+            sunrise_timestamp=_parse_iso_to_timestamp(sunrise_str, timezone),
+            sunset_timestamp=_parse_iso_to_timestamp(sunset_str, timezone),
             # Provider
             provider="Open-Meteo",
             # Raw (for debugging)

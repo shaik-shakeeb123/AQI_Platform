@@ -10,7 +10,6 @@
  * Conversion: km/h ÷ 3.6 = m/s.  This is the only transformation.
  */
 
-const KMH_TO_MS = 3.6;
 
 export const adaptWeather = (res) => {
     if (!res) return null;
@@ -18,6 +17,7 @@ export const adaptWeather = (res) => {
     return {
         cod: 200,
         name: res.city,
+        timezone: res.timezone || null,
         sys: {
             country: res.country_code || null,
             sunrise: res.sunrise_timestamp ?? null,
@@ -36,7 +36,7 @@ export const adaptWeather = (res) => {
             humidity: res.humidity ?? null
         },
         wind: {
-            speed: res.wind_speed != null ? Number((res.wind_speed / KMH_TO_MS).toFixed(2)) : null,
+            speed: res.wind_speed ?? null,
             deg: res.wind_direction ?? null
         }
     };

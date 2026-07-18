@@ -62,11 +62,13 @@ class SafeWindowService:
         models: Dict[str, Any]
     ) -> SafeWindowResponse:
         """Fetch records from repository/API fallback and simulate safest window."""
-        logger.info(f"Querying safe window for city={payload.city}")
+        logger.info(f"[SafeWindow] Business logic started for city={payload.city}")
         
         if not self.repository:
+            logger.error("[SafeWindow] Service repository is not configured")
             raise RuntimeError("SafeWindowService repository is not configured.")
             
+        logger.info("[SafeWindow] Step 1: Fetching recent history from database")
         records = await asyncio.to_thread(
             self.repository.get_recent_history_for_city, payload.city, 24
         )
@@ -143,10 +145,10 @@ class SafeWindowService:
                 
             records = fallback_records
             
-        # Extract coordinates from the latest database record
         latest_db_record = records[0]
         lat = latest_db_record.latitude
         lon = latest_db_record.longitude
+        logger.info(f"[SafeWindow] Step 2: Database records found (count={len(records)}). Latest coords: lat={lat}, lon={lon}")
         
         # Try geocoding fallback if coordinates are missing
         if lat is None or lon is None:
@@ -161,15 +163,19 @@ class SafeWindowService:
                 logger.error(f"Geocoding fallback failed for city {payload.city}: {ge_err}")
                 
         try:
+            logger.info("[SafeWindow] Step 3: Invoking ML simulation")
             result = await SafeWindowService._run_simulation(
                 payload.city, records, lat, lon, default_model, models
             )
-            return SafeWindowResponse(
+            logger.info("[SafeWindow] Step 4: Response generated successfully")
+            resp = SafeWindowResponse(
                 city=latest_db_record.city or payload.city,
                 **result
             )
+            logger.info("[SafeWindow] Response returned to controller")
+            return resp
         except Exception as e:
-            logger.error(f"Safe window computation failed: {e}")
+            logger.error(f"[SafeWindow] Exception handling: computation failed: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
                 detail=f"Safe window execution failed: {str(e)}"
@@ -268,6 +274,11 @@ class SafeWindowService:
         duration = 2
         best_avg_aqi = float("inf")
         best_window_index = 0
+        
+        if not forecast_timeline:
+            raise ValueError("Forecast timeline generation yielded empty results.")
+        
+        logger.info(f"[SafeWindow] Simulation step: finding best {duration}-hour block out of {len(forecast_timeline)} hours")
         
         for i in range(len(forecast_timeline) - duration + 1):
             window_segment = forecast_timeline[i : i + duration]
