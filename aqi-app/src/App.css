@@ -155,23 +155,15 @@ pointer-events:none;
 
 
 /* APP CONTAINER */
-
-.app{
-
-margin-left:250px;
-
-width:100%;
-
-min-height:100vh;
-
-padding:30px;
-
-position:relative;
-
-z-index:10;
-
-color:var(--text);
-
+.app {
+    margin-left: var(--sidebar-width, 280px);
+    width: 100%;
+    min-height: 100vh;
+    padding: 30px;
+    position: relative;
+    z-index: 10;
+    color: var(--text);
+    transition: margin-left 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 

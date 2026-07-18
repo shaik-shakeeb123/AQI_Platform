@@ -1,244 +1,295 @@
-.sidebar{
+/* Sidebar.css */
 
-width:250px;
-
-height:100vh;
-
-background:#0f172a;
-
-position:fixed;
-
-left:0;
-
-top:0;
-
-padding:25px;
-
-box-sizing:border-box;
-
-color:white;
-
-box-shadow:4px 0 15px rgba(0,0,0,0.25);
-
+/* Global Variables for Sidebar */
+:root {
+    --sidebar-bg: rgba(15, 23, 42, 0.65);
+    --sidebar-border: rgba(255, 255, 255, 0.08);
+    --sidebar-hover: rgba(255, 255, 255, 0.05);
+    --sidebar-active-bg: rgba(255, 255, 255, 0.1);
+    --sidebar-text: #94a3b8;
+    --sidebar-text-active: #ffffff;
+    --sidebar-accent: #3b82f6;
+    --sidebar-width: 280px; /* Default overridden by JS */
 }
 
-
-
-.logo{
-
-text-align:center;
-
-font-size:26px;
-
-font-weight:bold;
-
-margin-bottom:40px;
-
-color:#ffffff;
-
+/* Base Nav */
+.sidebar {
+    height: 100vh;
+    background: var(--sidebar-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-right: 1px solid var(--sidebar-border);
+    position: fixed;
+    top: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    z-index: 50;
+    box-shadow: 4px 0 25px rgba(0,0,0,0.15);
+    overflow: hidden;
 }
 
-
-
-.sidebar ul{
-
-list-style:none;
-
-padding:0;
-
-margin:0;
-
+/* Modes */
+.sidebar.pinned {
+    /* Transitions for width are handled by Framer Motion, but we set a stable baseline */
 }
 
-
-
-.sidebar li{
-
-padding:15px 18px;
-
-margin-bottom:14px;
-
-border-radius:14px;
-
-cursor:pointer;
-
-font-size:17px;
-
-color:#cbd5e1;
-
-transition:all 0.3s ease;
-
+.sidebar.floating {
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-
-
-.sidebar li:hover{
-
-background:#1e293b;
-
-color:white;
-
-transform:translateX(5px);
-
+.sidebar-hover-trigger {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 16px;
+    height: 100vh;
+    z-index: 49;
+    cursor: e-resize;
+    background: transparent;
 }
 
-
-
-.sidebar li.active{
-
-background:#2563eb;
-
-color:white;
-
-font-weight:bold;
-
-box-shadow:0 4px 15px rgba(37,99,235,0.4);
-
+/* Header & Logo */
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 24px 20px;
+    min-height: 80px;
 }
 
-
-
-.logout{
-
-margin-top:40px;
-
-color:#ef4444;
-
-font-weight:bold;
-
+.logo-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    overflow: hidden;
+    white-space: nowrap;
 }
 
-
-
-.logout:hover{
-
-background:#450a0a;
-
-color:white;
-
-transform:translateX(5px);
-
-}
-.search-box{
-
-display:flex;
-
-align-items:center;
-
-gap:18px;
-
-flex-wrap:wrap;
-
+.logo-icon {
+    font-size: 24px;
+    flex-shrink: 0;
 }
 
-
-.search-input-wrapper{
-
-display:flex;
-
-align-items:center;
-
-background:#ffffff;
-
-padding:0 18px;
-
-border-radius:18px;
-
-height:58px;
-
-width:420px;
-
-box-shadow:0 8px 20px rgba(0,0,0,0.15);
-
+.logo-text {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
-
-.search-icon{
-
-font-size:22px;
-
-margin-right:12px;
-
-color:#64748b;
-
+.logo-text h2 {
+    font-size: 18px;
+    font-weight: 700;
+    color: #ffffff;
+    margin: 0;
+    line-height: 1.2;
+    letter-spacing: 0.5px;
 }
 
-
-.search-input-wrapper input{
-
-border:none;
-
-outline:none;
-
-width:100%;
-
-font-size:18px;
-
-background:transparent;
-
-color:#111827;
-
+.logo-text span {
+    font-size: 12px;
+    color: var(--sidebar-accent);
+    font-weight: 500;
+    letter-spacing: 1px;
+    text-transform: uppercase;
 }
 
-
-.search-input-wrapper input::placeholder{
-
-color:#94a3b8;
-
+/* Controls (Pin / Collapse) */
+.sidebar-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
-
-.search-btn{
-
-height:58px;
-
-padding:0 28px;
-
-border:none;
-
-border-radius:18px;
-
-font-size:18px;
-
-font-weight:600;
-
-cursor:pointer;
-
-background:linear-gradient(
-
-135deg,
-
-#2563eb,
-var(--accent)
-
-);
-
-color:white;
-
-box-shadow:0 8px 20px rgba(37,99,235,0.35);
-
-transition:0.3s;
-
+.control-btn {
+    background: transparent;
+    border: none;
+    color: var(--sidebar-text);
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
 }
 
-
-.search-btn:hover{
-
-transform:translateY(-3px);
-
-box-shadow:0 12px 25px rgba(37,99,235,0.45);
-
+.control-btn:hover {
+    background: var(--sidebar-hover);
+    color: #ffffff;
 }
-.app{
 
-margin-left:270px;
-
-padding:30px;
-
-min-height:100vh;
-
-background:#111827;
-
-box-sizing:border-box;
-
+.toggle-collapse {
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* Navigation List */
+.sidebar-nav {
+    list-style: none;
+    padding: 0 12px;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* Custom Scrollbar for sidebar */
+.sidebar-nav::-webkit-scrollbar {
+    width: 4px;
+}
+.sidebar-nav::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+}
+
+/* Nav Item */
+.nav-item {
+    position: relative;
+    border-radius: 8px;
+}
+
+.nav-btn {
+    width: 100%;
+    background: transparent;
+    border: none;
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--sidebar-text);
+    transition: all 0.2s ease;
+    text-decoration: none;
+    position: relative;
+    overflow: visible; /* Needed for tooltip */
+}
+
+.nav-btn:hover {
+    background: var(--sidebar-hover);
+    color: var(--sidebar-text-active);
+}
+
+.nav-item.active .nav-btn {
+    background: var(--sidebar-active-bg);
+    color: var(--sidebar-text-active);
+    font-weight: 500;
+}
+
+/* Icons */
+.nav-icon-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+}
+
+.nav-icon {
+    font-size: 20px !important;
+}
+
+.active-indicator {
+    position: absolute;
+    left: -12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: 16px;
+    background: var(--sidebar-accent);
+    border-radius: 0 4px 4px 0;
+    box-shadow: 0 0 10px var(--sidebar-accent);
+}
+
+/* Label */
+.nav-label {
+    margin-left: 14px;
+    font-size: 14px;
+    white-space: nowrap;
+    letter-spacing: 0.3px;
+}
+
+/* Tooltip (for collapsed state) */
+.nav-tooltip {
+    position: absolute;
+    left: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%) translateX(10px);
+    background: #1e293b;
+    color: #f8fafc;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.05);
+    z-index: 100;
+}
+
+.nav-btn:hover .nav-tooltip {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(-50%) translateX(0);
+}
+
+/* Footer */
+.sidebar-footer {
+    padding: 12px;
+    border-top: 1px solid var(--sidebar-border);
+    margin-top: auto;
+}
+
+.logout .nav-btn {
+    color: #ef4444;
+}
+
+.logout .nav-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: #f87171;
+}
+
+.logout .active-indicator {
+    background: #ef4444;
+    box-shadow: 0 0 10px #ef4444;
+}
+
+/* Mobile Toggle Button */
+.mobile-toggle {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 40;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+/* Mobile Overlay */
+.sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    z-index: 48;
+}
+
+/* Media Queries handled by JS setting --sidebar-width */
