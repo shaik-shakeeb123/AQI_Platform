@@ -759,9 +759,8 @@ setPage={setPage}
     <div className="search-box">
 
         <SearchBar
-
             onSearch={fetchAQI}
-
+            isLoading={loading}
         />
 
     </div>
