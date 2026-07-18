@@ -1,4 +1,4 @@
-import React, { useState, useEffect, startTransition, useRef } from "react";
+import React, { useState, useEffect, startTransition } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../context/AuthContext";
 import "./Sidebar.css";
