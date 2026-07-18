@@ -277,93 +277,6 @@ flex-direction:column;
 gap:25px;
 
 }
-/* FEATURE CARDS */
-
-.feature-row{
-
-display:grid;
-
-grid-template-columns:
-
-repeat(
-
-auto-fit,
-
-minmax(200px,1fr)
-
-);
-
-gap:25px;
-
-}
-.feature-card{
-
-background:var(--card);
-
-backdrop-filter:blur(20px);
-
--webkit-backdrop-filter:blur(20px);
-
-padding:25px;
-
-border-radius:25px;
-
-border:
-
-1px solid
-
-var(--border);
-
-text-align:center;
-
-animation:
-
-slideUp
-
-0.7s ease;
-
-}
-.feature-card:hover{
-
-transform:
-
-translateY(-8px);
-
-box-shadow:
-
-0 15px 35px
-
-rgba(
-
-0,
-
-0,
-
-0,
-
-0.3
-
-);
-
-}
-.feature-card h4{
-
-font-size:22px;
-
-margin-top:15px;
-
-color:var(--accent);
-
-}
-.feature-card p{
-
-margin-top:10px;
-
-color:var(--secondary);
-
-line-height:1.7;
-
-}
 /* BUTTONS */
 
 button{
@@ -562,22 +475,6 @@ font-size:45px;
 
 
 /* ===========================
-   Feature Cards
-=========================== */
-
-.feature-row{
-    display:grid;
-    grid-template-columns:repeat(4,1fr);
-    gap:20px;
-    margin:25px 0 35px;
-}
-
-.feature-card{
-    min-height:150px;
-}
-
-
-/* ===========================
    Hero Header
 =========================== */
 
@@ -653,17 +550,9 @@ font-size:45px;
         grid-template-columns:1fr;
     }
 
-    .feature-row{
-        grid-template-columns:repeat(2,1fr);
-    }
-
 }
 
 @media(max-width:700px){
-
-    .feature-row{
-        grid-template-columns:1fr;
-    }
 
     .hero-header{
         flex-direction:column;
