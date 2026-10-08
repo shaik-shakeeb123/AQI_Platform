@@ -1,3 +1,4 @@
+
 # AQI Platform — Backend
 
 An enterprise-grade Air Quality Intelligence (AQI) Platform backend API delivering real-time telemetry processing, CPCB-standard calculations, machine learning-powered predictions, and exposure-aware route optimization.

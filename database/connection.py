@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from typing import Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from api_layer.config import get_settings
@@ -39,10 +39,16 @@ engine = create_engine(
     pool_recycle=1800,  # recycle connections every 30 min to avoid Render idle-TCP drops
     echo=settings.DEBUG,
     connect_args={
-        "connect_timeout": 10,            # TCP connect timeout (seconds)
-        "options": "-c statement_timeout=30000",  # server-side 30 s query timeout (ms)
+        "connect_timeout": 10,  # TCP connect timeout (seconds)
     },
 )
+
+@event.listens_for(engine, "connect")
+def set_statement_timeout(dbapi_connection: Any, connection_record: Any) -> None:
+    """Apply a 30-second statement timeout on each new DBAPI connection."""
+    with dbapi_connection.cursor() as cursor:
+        cursor.execute("SET statement_timeout = 30000")
+
 
 SessionLocal: sessionmaker[Session] = sessionmaker(
     autocommit=False,
@@ -76,4 +82,3 @@ def init_db() -> None:
     from database.models.user import User  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
-
