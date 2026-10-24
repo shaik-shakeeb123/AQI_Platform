@@ -8,17 +8,17 @@ from typing import Any
 @dataclass
 class IngestionMetrics:
     """Collects counters and timings for a single ingestion run."""
-    # Location metrics
-    locations_examined: int = 0
-    locations_attempted: int = 0
-    locations_skipped: int = 0
+    # Location metrics (Unit: distinct station locations)
+    locations_examined: int = 0   # Planned active locations selected for polling in this run
+    locations_attempted: int = 0  # Locations where HTTP retrieval was actively initiated
+    locations_skipped: int = 0    # Planned locations unpolled due to abort, budget, or cancellation
 
-    # Record metrics
-    records_fetched: int = 0
-    records_validated: int = 0
-    records_rejected: int = 0
-    records_stored: int = 0
-    duplicates_skipped: int = 0
+    # Record metrics (Units documented below)
+    records_fetched: int = 0      # Unit: raw sensor measurements from OpenAQ results array
+    records_validated: int = 0    # Unit: time-grouped observation records passing AQIDataValidate schema
+    records_rejected: int = 0     # Unit: observation records rejected (missing timestamp, invalid pollutants)
+    records_stored: int = 0       # Unit: database rows durably committed to aqi_data table
+    duplicates_skipped: int = 0   # Unit: observation records skipped as existing or <= watermark checkpoint
 
     # API metrics
     openaq_requests: int = 0

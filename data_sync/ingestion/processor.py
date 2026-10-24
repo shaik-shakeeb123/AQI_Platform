@@ -14,7 +14,7 @@ from data_sync.ingestion.metrics import IngestionMetrics
 from data_sync.ingestion.models import IngestionLocation
 from data_sync.data_processor import (
     DataProcessor, calculate_overall_aqi,
-    extract_city_from_name
+    extract_city_from_name, extract_measurement_datetime
 )
 from database.models.aqi_data import AQIData
 from database.schemas.aqi_data import AQIDataValidate
@@ -71,20 +71,13 @@ class IngestionProcessor:
             self.metrics.records_rejected += 1
             return [], None
             
-        # Extract the exact measurement timestamp from the raw payload
-        # (Assuming OpenAQ v3 /latest returns a list of measurements with a date.utc)
+        # Extract the exact measurement timestamp from the raw payload safely
         latest_meas_time = None
         for m in raw_measurements:
-            dt = m.get("period", {}).get("datetimeTo", {}).get("utc")
-            if not dt:
-                dt = m.get("date", {}).get("utc")
-            if dt:
-                try:
-                    dt_parsed = datetime.fromisoformat(dt.replace("Z", "+00:00")).replace(tzinfo=None)
-                    if latest_meas_time is None or dt_parsed > latest_meas_time:
-                        latest_meas_time = dt_parsed
-                except ValueError:
-                    pass
+            dt_parsed = extract_measurement_datetime(m)
+            if dt_parsed:
+                if latest_meas_time is None or dt_parsed > latest_meas_time:
+                    latest_meas_time = dt_parsed
                     
         if not latest_meas_time:
             self.metrics.records_rejected += 1

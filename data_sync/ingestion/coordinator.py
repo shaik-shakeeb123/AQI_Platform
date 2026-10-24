@@ -269,16 +269,16 @@ class IngestionCoordinator:
             for loc, records, new_time in batch:
                 if not records:
                     continue
-                try:
-                    with self.db.begin_nested():
-                        for r in records:
+                for r in records:
+                    try:
+                        with self.db.begin_nested():
                             self.db.add(r)
-                        self.db.flush()
-                    self.metrics.records_stored += len(records)
-                    if new_time and (loc.last_successful_ingestion_at is None or new_time > loc.last_successful_ingestion_at):
-                        loc.last_successful_ingestion_at = new_time
-                except IntegrityError:
-                    self.metrics.duplicates_skipped += len(records)
+                            self.db.flush()
+                        self.metrics.records_stored += 1
+                        if new_time and (loc.last_successful_ingestion_at is None or new_time > loc.last_successful_ingestion_at):
+                            loc.last_successful_ingestion_at = new_time
+                    except IntegrityError:
+                        self.metrics.duplicates_skipped += 1
             
             if not self.dry_run:
                 if self.run_record:
@@ -374,34 +374,24 @@ class IngestionCoordinator:
             
         return "PARTIAL" if has_failures else "SUCCESS"
 
-    async def execute(self) -> bool:
+    async def execute(self) -> str:
         """Run the end-to-end ingestion cycle."""
         start_time = time.time()
         logger.info("[%s] Starting Ingestion Coordinator", self.run_id)
 
-        # 1. Master compliance kill-switch check
-        settings = get_settings()
-        if not getattr(settings, "OPENAQ_INGESTION_ENABLED", False):
-            logger.warning(
-                "[%s] OpenAQ live ingestion is DISABLED by compliance policy "
-                "(OPENAQ_INGESTION_ENABLED=False). Run will not execute.",
-                self.run_id,
-            )
-            return False
-        
         # Open transaction
         try:
-            # 2. Acquire Lock (session-scoped exclusive advisory lock)
+            # 1. Acquire Lock (session-scoped exclusive advisory lock)
             if not await self._acquire_lock():
                 logger.warning("Another ingestion process is currently holding the advisory lock. Aborting.")
-                return False
+                return "SKIPPED_LOCKED"
 
-            # 3. Clean up orphaned RUNNING runs from previous crashed processes
+            # 2. Clean up orphaned RUNNING runs from previous crashed processes
             try:
                 self.db.execute(
                     text(
                         "UPDATE ingestion_runs "
-                        "SET status = 'CRASHED', finished_at = NOW(), "
+                        "SET status = 'CRASHED', finished_at = CURRENT_TIMESTAMP, "
                         "error_message = 'Process terminated unexpectedly (orphaned RUNNING status)' "
                         "WHERE provider = :provider AND status = 'RUNNING' AND run_id != :current_run_id"
                     ),
@@ -411,7 +401,7 @@ class IngestionCoordinator:
             except Exception as e:
                 logger.warning("[%s] Failed to clean up orphaned runs: %s", self.run_id, e)
                 
-            # 4. Setup Run Record
+            # 3. Setup Run Record
             self.run_record = IngestionRun(
                 run_id=self.run_id,
                 provider=self.provider,
@@ -435,7 +425,7 @@ class IngestionCoordinator:
                 )
                 if self.run_record:
                     self.run_record.status = "SKIPPED"
-                return False
+                return "SKIPPED_BUDGET"
 
             # 6. Metadata Sync (now guarded by budget check)
             if await self._should_run_metadata_sync():
@@ -456,13 +446,18 @@ class IngestionCoordinator:
             raise
         except Exception as e:
             logger.exception("[%s] Ingestion failed: %s", self.run_id, e)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
             if self.run_record:
                 self.run_record.status = "FAILED"
                 self.run_record.error_message = str(e)
-            return False
+            return "FAILED"
             
         finally:
             if self.run_record:
+                self.metrics.locations_skipped = max(0, self.metrics.locations_examined - self.metrics.locations_attempted)
                 self.run_record.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 self.run_record.execution_seconds = time.time() - start_time
                 

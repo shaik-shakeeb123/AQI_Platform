@@ -26,12 +26,12 @@ async def main() -> int:
     """Run the ingestion job exactly once and exit."""
     logger.info("Starting one-time AQI ingestion job via GitHub Actions...")
     try:
-        success = await run_ingestion_job()
-        if success:
-            logger.info("One-time AQI ingestion job completed successfully.")
+        status = await run_ingestion_job()
+        if status in ("SUCCESS", "PARTIAL") or str(status).startswith("SKIPPED"):
+            logger.info("One-time AQI ingestion job finished cleanly (status: %s).", status)
             return 0
         else:
-            logger.error("One-time AQI ingestion job encountered an error.")
+            logger.error("One-time AQI ingestion job failed (status: %s).", status)
             return 1
     except asyncio.CancelledError:
         logger.info("Ingestion job was cancelled.")

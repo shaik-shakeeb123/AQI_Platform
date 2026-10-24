@@ -50,11 +50,6 @@ class Settings(BaseSettings):
     OPENAQ_REQUESTS_PER_MINUTE: int = 45
     INGESTION_DRY_RUN: bool = False
 
-    # Master compliance switch for live OpenAQ ingestion.
-    # Default is False (disabled). Ingestion will NOT run scheduled jobs or
-    # metadata sync unless an operator explicitly enables this via environment
-    # variable OPENAQ_INGESTION_ENABLED=true after provider authorization.
-    OPENAQ_INGESTION_ENABLED: bool = False
 
     # ── OpenAQ Compliance Controls ──────────────────────────────────────
     # Kill-switch for the legacy /sync/openaq-test endpoint.
@@ -71,17 +66,7 @@ class Settings(BaseSettings):
 
     # User-Agent header sent with every governed OpenAQ request.
     # Identifies the platform for OpenAQ's server-side logging.
-    # Contact email surfaced in the User-Agent header sent with every governed
-    # OpenAQ request.  Operators MUST set this to a real, monitored address so
-    # OpenAQ staff can reach them if request behaviour is flagged.
-    # Leave blank to use 'unknown' as the contact identifier (a startup warning
-    # will be emitted to remind operators to fill this in).
-    OPENAQ_CONTACT_EMAIL: str = ""
-
-    # User-Agent header template for every governed OpenAQ request.
-    # The literal {contact} token is replaced at runtime with OPENAQ_CONTACT_EMAIL.
-    # Identifies the platform in OpenAQ server-side logs.
-    OPENAQ_USER_AGENT: str = "AQIPlatform/1.0 (responsible-use; contact={contact})"
+    OPENAQ_USER_AGENT: str = "AQIPlatform/1.0 (responsible-use)"
 
     # ── ML Model Configuration ──────────────────────────────────────────
     STALE_THRESHOLD_HOURS: int = 7

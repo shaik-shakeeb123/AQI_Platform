@@ -76,19 +76,29 @@ class IngestionPlanner:
         # Fallback to check active stations at least once a day even if metadata seems stale
         daily_check = now - timedelta(hours=24)
         
-        stmt = select(IngestionLocation).where(
-            and_(
-                IngestionLocation.provider == self.provider,
-                IngestionLocation.is_active == True,
-                IngestionLocation.last_synced_at <= recently_checked,
-                or_(
-                    # Never successfully ingested
-                    IngestionLocation.last_successful_ingestion_at == None,
-                    # Metadata indicates newer data is available
-                    IngestionLocation.provider_datetime_last > IngestionLocation.last_successful_ingestion_at,
-                    # Fallback to check periodically just in case
-                    IngestionLocation.last_synced_at <= daily_check
+        stmt = (
+            select(IngestionLocation)
+            .where(
+                and_(
+                    IngestionLocation.provider == self.provider,
+                    IngestionLocation.is_active == True,
+                    or_(
+                        IngestionLocation.last_synced_at == None,
+                        IngestionLocation.last_synced_at <= recently_checked,
+                    ),
+                    or_(
+                        # Never successfully ingested
+                        IngestionLocation.last_successful_ingestion_at == None,
+                        # Metadata indicates newer data is available
+                        IngestionLocation.provider_datetime_last > IngestionLocation.last_successful_ingestion_at,
+                        # Fallback to check periodically just in case
+                        IngestionLocation.last_synced_at <= daily_check,
+                    ),
                 )
+            )
+            .order_by(
+                IngestionLocation.last_synced_at.asc().nullsfirst(),
+                IngestionLocation.provider_location_id.asc(),
             )
         )
         

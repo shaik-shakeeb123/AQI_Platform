@@ -7,17 +7,6 @@ from sqlalchemy import select, func
 from data_sync.ingestion.models import IngestionLocation, IngestionRun
 from data_sync.ingestion.coordinator import IngestionCoordinator
 
-@pytest.fixture
-def db_session():
-    from database.connection import SessionLocal
-    db = SessionLocal()
-    from database.models.aqi_data import AQIData
-    db.query(AQIData).filter(AQIData.location_name.in_(["Station_Cancel_A", "Station_Cancel_B"])).delete()
-    db.query(IngestionLocation).filter(IngestionLocation.location_name.in_(["Station_Cancel_A", "Station_Cancel_B"])).delete()
-    db.commit()
-    yield db
-    db.close()
-
 @pytest.mark.asyncio
 async def test_coordinator_cancellation_safety(db_session):
     now = datetime.now()
@@ -41,11 +30,9 @@ async def test_coordinator_cancellation_safety(db_session):
     coordinator._should_run_metadata_sync = AsyncMock(return_value=False)
     coordinator._check_db_backed_hourly_budget = AsyncMock(return_value=True)
     
-    from api_layer.config import get_settings
-    with patch.object(get_settings(), "OPENAQ_INGESTION_ENABLED", True):
-        task = asyncio.create_task(coordinator.execute())
-        await asyncio.sleep(0.05)  # Let it start
-        task.cancel()  # Cancel it mid-flight before DB writer commits (batch size 25 not reached)
+    task = asyncio.create_task(coordinator.execute())
+    await asyncio.sleep(0.05)  # Let it start
+    task.cancel()  # Cancel it mid-flight before DB writer commits (batch size 25 not reached)
     
     try:
         await task

@@ -153,6 +153,66 @@ def extract_city_from_name(name: str) -> str:
     return "Unknown"
 
 
+def extract_measurement_datetime(m: Any) -> Optional[datetime]:
+    """Safely extract and parse observation timestamp from various OpenAQ payload formats.
+
+    Supported formats:
+    - period.datetimeTo.utc (OpenAQ v3 period object)
+    - period.datetimeTo (if ISO string)
+    - period.datetimeFrom.utc
+    - period.datetimeFrom (if ISO string)
+    - datetime.utc (OpenAQ v3 locations/latest object)
+    - datetime (if direct ISO string)
+    - date.utc (OpenAQ v2 / legacy)
+    - date (if direct ISO string)
+    """
+    if not isinstance(m, dict):
+        return None
+
+    dt_str = None
+
+    # 1. period object
+    period = m.get("period")
+    if isinstance(period, dict):
+        dt_to = period.get("datetimeTo")
+        if isinstance(dt_to, dict):
+            dt_str = dt_to.get("utc")
+        elif isinstance(dt_to, str):
+            dt_str = dt_to
+
+        if not dt_str:
+            dt_from = period.get("datetimeFrom")
+            if isinstance(dt_from, dict):
+                dt_str = dt_from.get("utc")
+            elif isinstance(dt_from, str):
+                dt_str = dt_from
+
+    # 2. datetime object / string (OpenAQ v3)
+    if not dt_str:
+        dt_val = m.get("datetime")
+        if isinstance(dt_val, dict):
+            dt_str = dt_val.get("utc")
+        elif isinstance(dt_val, str):
+            dt_str = dt_val
+
+    # 3. date object / string (OpenAQ v2 / legacy)
+    if not dt_str:
+        date_val = m.get("date")
+        if isinstance(date_val, dict):
+            dt_str = date_val.get("utc")
+        elif isinstance(date_val, str):
+            dt_str = date_val
+
+    if not dt_str or not isinstance(dt_str, str):
+        return None
+
+    try:
+        cleaned = dt_str.strip().replace("Z", "+00:00")
+        return datetime.fromisoformat(cleaned).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
+
+
 class DataProcessor:
     """Stateless utility class to parse, clean, and validate telemetry updates."""
 
@@ -249,24 +309,9 @@ class DataProcessor:
             if not param_name:
                 continue
 
-            # Extract v3 timestamp
-            date_utc_str = None
-            period = m.get("period", {})
-            if isinstance(period, dict) and period.get("datetimeTo"):
-                date_utc_str = period.get("datetimeTo", {}).get("utc")
-            if not date_utc_str:
-                date_obj = m.get("date", {})
-                if isinstance(date_obj, dict):
-                    date_utc_str = date_obj.get("utc")
-            if not date_utc_str:
-                date_utc_str = (m.get("datetime", {}) or {}).get("utc")
-
-            if not date_utc_str:
-                continue
-
-            try:
-                m_time = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00")).replace(tzinfo=None)
-            except (ValueError, TypeError):
+            # Extract observation timestamp safely
+            m_time = extract_measurement_datetime(m)
+            if not m_time:
                 continue
 
             val = float(val)

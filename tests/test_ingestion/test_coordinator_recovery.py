@@ -7,19 +7,6 @@ from sqlalchemy import select
 from data_sync.ingestion.models import IngestionLocation, IngestionRun
 from data_sync.ingestion.coordinator import IngestionCoordinator
 
-@pytest.fixture
-def db_session():
-    from database.connection import SessionLocal
-    # Assumes test database is configured
-    db = SessionLocal()
-    # Cleanup before test
-    from database.models.aqi_data import AQIData
-    db.query(AQIData).filter(AQIData.location_name.in_(["Station_A", "Station_B", "Station_C"])).delete()
-    db.query(IngestionLocation).filter(IngestionLocation.location_name.in_(["Station_A", "Station_B", "Station_C"])).delete()
-    db.commit()
-    yield db
-    db.close()
-
 @pytest.mark.asyncio
 async def test_coordinator_partial_failure_recovery(db_session):
     """
@@ -66,9 +53,7 @@ async def test_coordinator_partial_failure_recovery(db_session):
     
     # 2. Run execution
     # It should return "PARTIAL" because of the failure
-    from api_layer.config import get_settings
-    with patch.object(get_settings(), "OPENAQ_INGESTION_ENABLED", True):
-        result = await coordinator.execute()
+    result = await coordinator.execute()
     assert result == "PARTIAL"
     
     # 3. Verify state in DB

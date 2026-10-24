@@ -25,9 +25,8 @@ async def test_coordinator_acquires_lock(mock_db):
 async def test_coordinator_handles_lock_failure(mock_db):
     mock_db.execute.return_value.scalar.return_value = False
     coord = IngestionCoordinator(db=mock_db, dry_run=True)
-    with patch.object(get_settings(), "OPENAQ_INGESTION_ENABLED", True):
-        success = await coord.execute()
-    assert success is False
+    success = await coord.execute()
+    assert success == "SKIPPED_LOCKED"
     assert coord.run_record is None
 
 @pytest.mark.asyncio
@@ -41,8 +40,7 @@ async def test_coordinator_updates_watermark(mock_db):
     coord.planner.get_watermark = MagicMock(return_value=None)
     coord.planner.plan_measurement_ingestion = MagicMock(return_value=[])
     
-    with patch.object(get_settings(), "OPENAQ_INGESTION_ENABLED", True):
-        await coord.execute()
+    await coord.execute()
     
     assert coord.run_record is not None
     assert coord.run_record.status == "SUCCESS"

@@ -530,32 +530,27 @@ async def test_coordinator_checks_budget_before_metadata_sync():
     coordinator._check_db_backed_hourly_budget = AsyncMock(return_value=False)
     coordinator._sync_metadata = AsyncMock()
 
-    with patch.object(get_settings(), "OPENAQ_INGESTION_ENABLED", True):
-        success = await coordinator.execute()
+    success = await coordinator.execute()
 
-    assert success is False
+    assert success == "SKIPPED_BUDGET"
     assert coordinator.run_record.status == "SKIPPED"
     # Metadata sync MUST NOT have been called!
     coordinator._sync_metadata.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_live_ingestion_disabled_by_default():
-    """Verify coordinator.execute() immediately exits when OPENAQ_INGESTION_ENABLED is False."""
+async def test_live_ingestion_proceeds_directly_without_flag():
+    """Verify coordinator.execute() proceeds directly to lock acquisition without checking any feature flag."""
     from data_sync.ingestion.coordinator import IngestionCoordinator
 
     mock_db = MagicMock()
+    mock_db.execute.return_value.scalar.return_value = False
     coordinator = IngestionCoordinator(db=mock_db, dry_run=False)
-    coordinator.run_id = "test-disabled-by-default"
+    coordinator.run_id = "test-proceeds-directly"
 
-    # Default is OPENAQ_INGESTION_ENABLED=False
-    with patch.object(get_settings(), "OPENAQ_INGESTION_ENABLED", False):
-        success = await coordinator.execute()
-
-    assert success is False
-    # No DB queries, no lock acquisition, no run record created
-    assert coordinator.run_record is None
-    mock_db.execute.assert_not_called()
+    status = await coordinator.execute()
+    assert status == "SKIPPED_LOCKED"
+    mock_db.execute.assert_called()
 
 
 def test_root_directory_free_of_live_diagnostic_scripts():
@@ -590,3 +585,24 @@ def test_manual_diagnostic_scripts_safeguarded():
         # Should exit with non-zero or error message containing SAFEGUARD
         output = result.stdout + result.stderr
         assert "SAFEGUARD" in output, f"Script {script_rel} did not exit with safeguard: {output}"
+
+
+@pytest.mark.asyncio
+async def test_run_once_exits_zero_on_skipped():
+    """Verify data_sync.run_once.main() returns exit code 0 when run is SKIPPED."""
+    from data_sync.run_once import main
+
+    with patch("data_sync.run_once.run_ingestion_job", new_callable=AsyncMock) as mock_job:
+        mock_job.return_value = "SKIPPED_LOCKED"
+        exit_code = await main()
+        assert exit_code == 0
+
+    with patch("data_sync.run_once.run_ingestion_job", new_callable=AsyncMock) as mock_job:
+        mock_job.return_value = "SKIPPED_BUDGET"
+        exit_code = await main()
+        assert exit_code == 0
+
+    with patch("data_sync.run_once.run_ingestion_job", new_callable=AsyncMock) as mock_job:
+        mock_job.return_value = "FAILED"
+        exit_code = await main()
+        assert exit_code == 1

@@ -16,23 +16,9 @@ class OpenAQAdapter:
     def __init__(self, metrics: IngestionMetrics | None = None) -> None:
         settings = get_settings()
         self.base_url = settings.OPENAQ_BASE_URL
-        # Resolve the {contact} placeholder in the User-Agent template.
-        # Operators must set OPENAQ_CONTACT_EMAIL to a real, monitored address.
-        from api_layer.logging import get_logger as _get_logger
-        _plog = _get_logger(__name__)
-        contact_email = getattr(settings, "OPENAQ_CONTACT_EMAIL", "").strip()
-        if not contact_email:
-            _plog.warning(
-                "OPENAQ_CONTACT_EMAIL is not set. OpenAQ User-Agent will use 'unknown' as the "
-                "contact identifier. Set this to a real email in your environment to comply "
-                "with OpenAQ responsible-use guidelines."
-            )
-            contact_email = "unknown"
-        ua_template = getattr(settings, "OPENAQ_USER_AGENT", "AQIPlatform/1.0 (responsible-use; contact={contact})")
-        resolved_ua = ua_template.replace("{contact}", contact_email)
         self.headers = {
             "X-API-Key": settings.OPENAQ_API_KEY,
-            "User-Agent": resolved_ua,
+            "User-Agent": getattr(settings, "OPENAQ_USER_AGENT", "AQIPlatform/1.0 (responsible-use)"),
         }
         self.metrics = metrics or IngestionMetrics()
         

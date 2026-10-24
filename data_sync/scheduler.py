@@ -46,8 +46,10 @@ async def run_ingestion_job() -> str:
             logger.info("Ingestion completed successfully.")
         elif status == "PARTIAL":
             logger.warning("Ingestion completed with partial failures.")
+        elif str(status).startswith("SKIPPED"):
+            logger.info("Ingestion skipped: %s.", status)
         else:
-            logger.error("Ingestion failed.")
+            logger.error("Ingestion failed with status: %s.", status)
         return status
     except asyncio.CancelledError:
         logger.info("Ingestion run was cancelled.")
