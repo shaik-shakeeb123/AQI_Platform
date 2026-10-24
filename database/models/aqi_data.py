@@ -23,7 +23,7 @@ class AQIData(Base):
         # Prevents duplicate ingestion records at the DB level.
         # IntegrityError on insert is caught in sync_service and treated as a
         # duplicate skip, so existing duplicate-cache logic is unaffected.
-        UniqueConstraint("location_name", "recorded_at", name="uq_aqi_data_location_recorded_at"),
+        UniqueConstraint("city", "location_name", "recorded_at", name="uq_aqi_data_city_location_recorded_at"),
     )
 
     id: Mapped[int] = mapped_column(

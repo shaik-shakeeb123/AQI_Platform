@@ -34,29 +34,27 @@ except Exception:
 configure_logging()
 logger = get_logger("scheduler")
 
-async def run_ingestion_job() -> bool:
+async def run_ingestion_job() -> str:
     """Run incremental AQI ingestion."""
-    settings = get_settings()
-    target_records = settings.SCHEDULED_TARGET_RECORDS
-    batch_size = settings.SCHEDULED_BATCH_SIZE
-
     db = SessionLocal()
     try:
-        logger.info(
-            "Starting scheduled ingestion run (target_records=%d, batch_size=%d)...",
-            target_records,
-            batch_size,
-        )
-        service = POCSyncService(db)
-        res = await service.sync_openaq_test(target_records=target_records, batch_size=batch_size)
-        logger.info("Scheduled ingestion completed successfully. Summary: %s", res)
-        return True
+        logger.info("Starting ingestion run via Coordinator...")
+        from data_sync.ingestion.coordinator import IngestionCoordinator
+        coordinator = IngestionCoordinator(db=db)
+        status = await coordinator.execute()
+        if status == "SUCCESS":
+            logger.info("Ingestion completed successfully.")
+        elif status == "PARTIAL":
+            logger.warning("Ingestion completed with partial failures.")
+        else:
+            logger.error("Ingestion failed.")
+        return status
     except asyncio.CancelledError:
         logger.info("Ingestion run was cancelled.")
         raise
     except Exception as err:
-        logger.exception("Error occurred during scheduled ingestion run: %s", str(err))
-        return False
+        logger.exception("Error occurred during ingestion run: %s", str(err))
+        return "FAILED"
     finally:
         db.close()
 

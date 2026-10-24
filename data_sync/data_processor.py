@@ -216,166 +216,138 @@ class DataProcessor:
     def process_measurements(
         meas_results: list,
         sensor_map: Dict[int, Any]
-    ) -> Tuple[Dict[str, Optional[float]], Optional[datetime]]:
-        """Extract pollutant values and the latest measurement timestamp.
+    ) -> list[Tuple[Dict[str, Optional[float]], datetime]]:
+        """Extract pollutant values grouped strictly by their exact observation timestamp.
         
-        Implements obsolete sensor filtering (rejecting measurements >2 hours older 
-        than the newest measurement in the batch) and CO unit scaling.
+        Supports OpenAQ v3 payloads (period.datetimeTo or date.utc).
+        Does not falsely flatten measurements from different times into a single record.
         """
-        pollutants = {
-            "pm25": None, "pm10": None, "no2": None, "o3": None, "co": None, "so2": None,
-            "temperature": None, "humidity": None
-        }
-        pollutant_times = {}
-        recorded_at = None
+        # Group by exact datetime
+        grouped_measurements: Dict[datetime, Dict[str, Optional[float]]] = {}
 
-        # Pass 1: Parse and find the latest measurement timestamp in the batch
-        latest_time = None
         for m in meas_results:
-            date_utc_str = (m.get("datetime", {}) or {}).get("utc")
-            if date_utc_str:
-                try:
-                    t = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
-                    if latest_time is None or t > latest_time:
-                        latest_time = t
-                except (ValueError, TypeError):
-                    pass
-
-        # Set recorded_at to the latest timestamp found
-        recorded_at = latest_time
-
-        # Pass 2: Process measurements
-        for m in meas_results:
-            s_id = m.get("sensorsId")
+            s_id = m.get("sensorsId") or m.get("sensorId") or m.get("id")
             val = m.get("value")
             if val is None:
                 continue
 
+            # Extract parameter info
             param_info = sensor_map.get(s_id, "") if s_id else ""
             if isinstance(param_info, tuple):
                 param_name, unit = param_info
             else:
                 param_name = param_info
                 unit = ""
+                
+            if not param_name:
+                # If sensor map didn't resolve it, try the v3 parameter object directly
+                param_obj = m.get("parameter", {})
+                if isinstance(param_obj, dict):
+                    param_name = param_obj.get("name", "")
+                    unit = param_obj.get("units", "")
 
-            date_utc_str = (m.get("datetime", {}) or {}).get("utc")
+            if not param_name:
+                continue
+
+            # Extract v3 timestamp
+            date_utc_str = None
+            period = m.get("period", {})
+            if isinstance(period, dict) and period.get("datetimeTo"):
+                date_utc_str = period.get("datetimeTo", {}).get("utc")
+            if not date_utc_str:
+                date_obj = m.get("date", {})
+                if isinstance(date_obj, dict):
+                    date_utc_str = date_obj.get("utc")
+            if not date_utc_str:
+                date_utc_str = (m.get("datetime", {}) or {}).get("utc")
+
             if not date_utc_str:
                 continue
 
             try:
-                m_time = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00"))
+                m_time = datetime.fromisoformat(date_utc_str.replace("Z", "+00:00")).replace(tzinfo=None)
             except (ValueError, TypeError):
-                continue
-
-            # Reject stale sensor measurements (older than latest_time by > 2 hours)
-            if latest_time and (latest_time - m_time).total_seconds() > 7200:
-                logger.warning(
-                    "Rejecting stale sensor measurement: sensor %s, param %s, unit %s, time %s (latest was %s)",
-                    s_id, param_name, unit, m_time.isoformat(), latest_time.isoformat()
-                )
                 continue
 
             val = float(val)
             normalized_param = None
-            if param_name in ("pm25", "pm2.5"):
+            param_lower = param_name.lower()
+            if param_lower in ("pm25", "pm2.5"):
                 normalized_param = "pm25"
-            elif param_name == "pm10":
+            elif param_lower == "pm10":
                 normalized_param = "pm10"
-            elif param_name == "no2":
+            elif param_lower == "no2":
                 normalized_param = "no2"
-            elif param_name == "o3":
+            elif param_lower == "o3":
                 normalized_param = "o3"
-            elif param_name == "co":
+            elif param_lower == "co":
                 normalized_param = "co"
-            elif param_name == "so2":
+            elif param_lower == "so2":
                 normalized_param = "so2"
-            elif param_name == "temperature":
+            elif param_lower == "temperature":
                 normalized_param = "temperature"
-            elif param_name in ("relativehumidity", "humidity"):
+            elif param_lower in ("relativehumidity", "humidity"):
                 normalized_param = "humidity"
 
             if normalized_param:
-                # Deduplicate and prevent overwriting fresh values with older ones
-                existing_time = pollutant_times.get(normalized_param)
-                if existing_time is None or m_time > existing_time:
-                    # Unit conversion for CO (target unit: mg/m³)
-                    if normalized_param == "co":
-                        scaled_val = val
-                        unit_lower = unit.lower()
-                        if "ug" in unit_lower or "µg" in unit_lower:
-                            scaled_val = val / 1000.0
-                            logger.info("Scaling CO from µg/m³ to mg/m³: %f -> %f", val, scaled_val)
-                        elif "ppb" in unit_lower:
-                            scaled_val = val * 0.001145
-                            logger.info("Scaling CO from ppb to mg/m³: %f -> %f", val, scaled_val)
-                        elif "ppm" in unit_lower:
-                            scaled_val = val * 1.145
-                            logger.info("Scaling CO from ppm to mg/m³: %f -> %f", val, scaled_val)
-                        val = scaled_val
+                # Initialize group if not exists
+                if m_time not in grouped_measurements:
+                    grouped_measurements[m_time] = {
+                        "pm25": None, "pm10": None, "no2": None, "o3": None, "co": None, "so2": None,
+                        "temperature": None, "humidity": None
+                    }
 
-                    # Unit conversion for NO₂ (target unit: µg/m³)
-                    # MW=46.01 → 1 ppb = 1.882 µg/m³ at 25°C, 1 atm
-                    elif normalized_param == "no2":
-                        unit_lower = unit.lower()
-                        if "ppb" in unit_lower:
-                            scaled_val = val * 1.882
-                            logger.info("Scaling NO2 from ppb to µg/m³: %f -> %f", val, scaled_val)
-                            val = scaled_val
-                        elif "ppm" in unit_lower:
-                            scaled_val = val * 1882.0
-                            logger.info("Scaling NO2 from ppm to µg/m³: %f -> %f", val, scaled_val)
-                            val = scaled_val
+                # Unit conversion logic (omitted for brevity, assume valid inputs or handled below)
+                # We apply the existing unit conversions directly
+                if normalized_param == "co":
+                    unit_lower = unit.lower()
+                    if "ug" in unit_lower or "µg" in unit_lower:
+                        val = val / 1000.0
+                    elif "ppb" in unit_lower:
+                        val = val * 0.001145
+                    elif "ppm" in unit_lower:
+                        val = val * 1.145
+                elif normalized_param == "no2":
+                    unit_lower = unit.lower()
+                    if "ppb" in unit_lower:
+                        val = val * 1.882
+                    elif "ppm" in unit_lower:
+                        val = val * 1882.0
+                elif normalized_param == "so2":
+                    unit_lower = unit.lower()
+                    if "ppb" in unit_lower:
+                        val = val * 2.620
+                    elif "ppm" in unit_lower:
+                        val = val * 2620.0
+                elif normalized_param == "o3":
+                    unit_lower = unit.lower()
+                    if "ppb" in unit_lower:
+                        val = val * 1.963
+                    elif "ppm" in unit_lower:
+                        val = val * 1963.0
 
-                    # Unit conversion for SO₂ (target unit: µg/m³)
-                    # MW=64.06 → 1 ppb = 2.620 µg/m³ at 25°C, 1 atm
-                    elif normalized_param == "so2":
-                        unit_lower = unit.lower()
-                        if "ppb" in unit_lower:
-                            scaled_val = val * 2.620
-                            logger.info("Scaling SO2 from ppb to µg/m³: %f -> %f", val, scaled_val)
-                            val = scaled_val
-                        elif "ppm" in unit_lower:
-                            scaled_val = val * 2620.0
-                            logger.info("Scaling SO2 from ppm to µg/m³: %f -> %f", val, scaled_val)
-                            val = scaled_val
+                # Validate
+                validated_val, status = DataProcessor.validate_pollutant(normalized_param, val)
+                if status == "invalid":
+                    continue
+                    
+                grouped_measurements[m_time][normalized_param] = validated_val
 
-                    # Unit conversion for O₃ (target unit: µg/m³)
-                    # MW=48.00 → 1 ppb = 1.963 µg/m³ at 25°C, 1 atm
-                    elif normalized_param == "o3":
-                        unit_lower = unit.lower()
-                        if "ppb" in unit_lower:
-                            scaled_val = val * 1.963
-                            logger.info("Scaling O3 from ppb to µg/m³: %f -> %f", val, scaled_val)
-                            val = scaled_val
-                        elif "ppm" in unit_lower:
-                            scaled_val = val * 1963.0
-                            logger.info("Scaling O3 from ppm to µg/m³: %f -> %f", val, scaled_val)
-                            val = scaled_val
-
-                    # Outlier validation check
-                    validated_val, status = DataProcessor.validate_pollutant(normalized_param, val)
-                    if status == "suspicious":
-                        logger.warning(
-                            "Suspicious pollutant value detected during ingestion: %s = %f (unit: %s)",
-                            normalized_param, val, unit
-                        )
-                        val = validated_val
-                    elif status == "invalid":
-                        logger.error(
-                            "Invalid/corrupted pollutant value rejected during ingestion: %s = %f (unit: %s). Skipping value.",
-                            normalized_param, val, unit
-                        )
-                        continue
-
-                    pollutants[normalized_param] = val
-                    pollutant_times[normalized_param] = m_time
-
-        # If all CPCB pollutants are None, raise ValueError to skip corrupted record
+        # Filter out records that have NO valid pollutants
         cpcb_pollutants = ["pm25", "pm10", "no2", "o3", "co", "so2"]
-        if all(pollutants[p] is None for p in cpcb_pollutants):
+        valid_records = []
+        
+        for m_time, pollutants in grouped_measurements.items():
+            if any(pollutants[p] is not None for p in cpcb_pollutants):
+                valid_records.append((pollutants, m_time))
+                
+        # Sort by timestamp ascending
+        valid_records.sort(key=lambda x: x[1])
+        
+        if not valid_records:
             raise ValueError("All pollutant measurements are invalid or None")
 
-        return pollutants, recorded_at
+        return valid_records
 
     @staticmethod
     def merge_weather(

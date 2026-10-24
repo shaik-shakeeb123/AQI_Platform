@@ -45,6 +45,7 @@ config.set_main_option("sqlalchemy.url", _settings.DATABASE_URL)
 from database.connection import Base          # noqa: E402, F401
 from database.models.aqi_data import AQIData  # noqa: E402, F401
 from database.models.user import User         # noqa: E402, F401
+from data_sync.ingestion.models import IngestionState, IngestionRun, IngestionLocation  # noqa: E402, F401
 
 target_metadata = Base.metadata
 

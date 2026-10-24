@@ -31,6 +31,8 @@ class AQIMeasurementResponse(BaseModel):
     precipitation: Optional[float] = None
     pressure: Optional[float] = None
     recorded_at: datetime
+    data_source: Optional[str] = Field(default="OpenAQ (openaq.org)", description="Original telemetry data source")
+    attribution: Optional[str] = Field(default="Data provided by OpenAQ (openaq.org) and partnering environmental monitoring agencies", description="Data provenance notice")
 
     model_config = {
         "from_attributes": True  # Allows Pydantic to read ORM objects directly
@@ -261,6 +263,7 @@ class CurrentAQIResponse(BaseModel):
     data_age_hours: Optional[float] = Field(default=None, description="Age of the most recent data in hours since measurement")
     freshness_status: Optional[str] = Field(default=None, description="Data freshness rating ('fresh', 'acceptable', 'stale')")
     source: str = Field("OpenAQ", description="The data source provider")
+    attribution: str = Field(default="Data provided by OpenAQ (openaq.org) and partnering environmental monitoring agencies", description="Data provenance notice")
     fallback_used: bool = Field(default=False, description="Indicates if fallback data source was utilized")
     cpcb_methodology: str = Field(..., description="CPCB methodology utilized ('rolling_average' or 'instantaneous_estimate')")
     confidence: str = Field(..., description="Scientific confidence rating ('high', 'medium', 'low')")

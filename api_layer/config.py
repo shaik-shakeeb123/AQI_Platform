@@ -44,6 +44,44 @@ class Settings(BaseSettings):
     SCHEDULED_TARGET_RECORDS: int = 1000
     SCHEDULED_BATCH_SIZE: int = 100
     LOCK_FILE_AGE_THRESHOLD_SECS: int = 3600
+    
+    # ── New Ingestion Configs ───────────────────────────────────────────
+    MAX_PROVIDER_CONCURRENCY: int = 10
+    OPENAQ_REQUESTS_PER_MINUTE: int = 45
+    INGESTION_DRY_RUN: bool = False
+
+    # Master compliance switch for live OpenAQ ingestion.
+    # Default is False (disabled). Ingestion will NOT run scheduled jobs or
+    # metadata sync unless an operator explicitly enables this via environment
+    # variable OPENAQ_INGESTION_ENABLED=true after provider authorization.
+    OPENAQ_INGESTION_ENABLED: bool = False
+
+    # ── OpenAQ Compliance Controls ──────────────────────────────────────
+    # Kill-switch for the legacy /sync/openaq-test endpoint.
+    # Default is False (disabled). The endpoint MUST NOT be enabled in
+    # production unless explicitly set to True via environment variable.
+    # Setting this to True in production is a compliance risk — the legacy
+    # path uses the ungoverned OpenAQClient without per-minute rate limiting.
+    OPENAQ_LEGACY_SYNC_ENABLED: bool = False
+
+    # Conservative hourly budget cap shared across ALL OpenAQ request paths.
+    # OpenAQ documents 2,000 req/hr. We use 1,800 to leave a 10% safety
+    # margin for retries, metadata sync, and unexpected overhead.
+    OPENAQ_HOURLY_REQUEST_BUDGET: int = 1800
+
+    # User-Agent header sent with every governed OpenAQ request.
+    # Identifies the platform for OpenAQ's server-side logging.
+    # Contact email surfaced in the User-Agent header sent with every governed
+    # OpenAQ request.  Operators MUST set this to a real, monitored address so
+    # OpenAQ staff can reach them if request behaviour is flagged.
+    # Leave blank to use 'unknown' as the contact identifier (a startup warning
+    # will be emitted to remind operators to fill this in).
+    OPENAQ_CONTACT_EMAIL: str = ""
+
+    # User-Agent header template for every governed OpenAQ request.
+    # The literal {contact} token is replaced at runtime with OPENAQ_CONTACT_EMAIL.
+    # Identifies the platform in OpenAQ server-side logs.
+    OPENAQ_USER_AGENT: str = "AQIPlatform/1.0 (responsible-use; contact={contact})"
 
     # ── ML Model Configuration ──────────────────────────────────────────
     STALE_THRESHOLD_HOURS: int = 7

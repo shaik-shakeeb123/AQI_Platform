@@ -142,6 +142,24 @@ app.add_middleware(
 from api_layer.rate_limiter import AuthRateLimitMiddleware  # noqa: E402
 app.add_middleware(AuthRateLimitMiddleware, max_requests=10)
 
+# ── Attribution Middleware ──────────────────────────────────────────────────
+# Adds provenance and source attribution headers to responses containing
+# OpenAQ-derived measurements, fulfilling OpenAQ Terms of Use attribution rules.
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
+
+class OpenAQAttributionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response: StarletteResponse = await call_next(request)
+        path = request.url.path
+        if path.startswith(("/currentAQI", "/history")):
+            response.headers["X-Data-Source"] = "OpenAQ (openaq.org)"
+            response.headers["X-Data-License"] = "https://openaq.org/about/terms"
+        return response
+
+app.add_middleware(OpenAQAttributionMiddleware)
+
 # ── Routers ─────────────────────────────────────────────────────────────────
 from api_layer.api.routes.aqi import router as aqi_router  # noqa: E402
 from api_layer.api.routes.auth import router as auth_router  # noqa: E402
@@ -156,31 +174,61 @@ if os.path.isdir(frontend_dir):
 
 
 
-# ── Proof of Concept Ingestion ──────────────────────────────────────────────
+# ── Proof of Concept Ingestion (DISABLED by default for compliance) ────────
+# The legacy /sync/openaq-test endpoint used POCSyncService / OpenAQClient
+# which lacked per-minute rate limiting (only concurrency=10), allowing bursts
+# of 60+ req/min and causing OpenAQ HTTP 429 errors and API key suspension.
+#
+# Under the compliance remediation, this endpoint is DISABLED by default.
+# It can only be activated by explicitly setting OPENAQ_LEGACY_SYNC_ENABLED=true.
+# When disabled (default in production), the route is not registered (returns 404),
+# ensuring zero ungoverned OpenAQ traffic.
 
+if settings.OPENAQ_LEGACY_SYNC_ENABLED:
+    logger.warning(
+        "⚠️  OPENAQ_LEGACY_SYNC_ENABLED is True! Legacy ungoverned endpoint "
+        "/sync/openaq-test is active. DO NOT run this in production without OpenAQ approval."
+    )
 
-@app.post("/sync/openaq-test", tags=["Proof of Concept Ingestion"])
-async def sync_openaq_test(
-    target_records: int = 100,
-    batch_size: int = 20,
-    db: Session = Depends(get_db),
-    x_sync_admin_key: str = Header(default="", alias="X-Sync-Admin-Key"),
-) -> dict[str, Any]:
-    """Trigger a minimal proof-of-concept AQI data collection run.
+    @app.post("/sync/openaq-test", tags=["Proof of Concept Ingestion (DEPRECATED)"])
+    async def sync_openaq_test(
+        target_records: int = 100,
+        batch_size: int = 20,
+        db: Session = Depends(get_db),
+        x_sync_admin_key: str = Header(default="", alias="X-Sync-Admin-Key"),
+    ) -> dict[str, Any]:
+        """Trigger a minimal proof-of-concept AQI data collection run.
 
-    Requires the ``X-Sync-Admin-Key`` header to match the ``SYNC_ADMIN_KEY``
-    environment variable.  Set ``SYNC_ADMIN_KEY`` in your Render environment
-    variables to a long random string.
-    """
-    sync_key = settings.SYNC_ADMIN_KEY
-    if not sync_key or x_sync_admin_key != sync_key:
+        [DEPRECATED] Requires the ``X-Sync-Admin-Key`` header to match the ``SYNC_ADMIN_KEY``
+        environment variable.
+        """
+        sync_key = settings.SYNC_ADMIN_KEY
+        if not sync_key or x_sync_admin_key != sync_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or missing X-Sync-Admin-Key header.",
+            )
+        # COMPLIANCE GUARD: The legacy POCSyncService uses a bare asyncio.Semaphore
+        # with no per-minute rate control — enabling it would bypass the central
+        # RequestGovernor and risk ungoverned OpenAQ traffic.
+        # This endpoint is intentionally blocked until the legacy client is ported
+        # to the governed OpenAQAdapter.  Set OPENAQ_LEGACY_SYNC_ENABLED=False
+        # (the production default) to suppress this route entirely.
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing X-Sync-Admin-Key header.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The legacy OpenAQ sync endpoint is not available. "
+                "The legacy client is ungoverned and must be ported to "
+                "the RequestGovernor-backed OpenAQAdapter before this "
+                "endpoint can be safely re-enabled. "
+                "Use the scheduled ingestion pipeline instead."
+            ),
         )
-    from data_sync.sync_service import POCSyncService
-    service = POCSyncService(db)
-    return await service.sync_openaq_test(target_records=target_records, batch_size=batch_size)
+else:
+    logger.info(
+        "OPENAQ_LEGACY_SYNC_ENABLED=False: legacy /sync/openaq-test endpoint is "
+        "not registered. OpenAQ ingestion is exclusively managed by the governed pipeline."
+    )
 
 
 # ── Health check ────────────────────────────────────────────────────────────
