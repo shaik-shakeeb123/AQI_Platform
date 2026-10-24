@@ -127,7 +127,8 @@ class IngestionCoordinator:
                         latitude=lat,
                         longitude=lon,
                         provider_datetime_last=datetime_last,
-                        is_active=True
+                        is_active=True,
+                        last_synced_at=datetime(2000, 1, 1),
                     )
                     self.db.add(db_loc)
                 else:

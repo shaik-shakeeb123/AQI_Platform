@@ -162,8 +162,8 @@ class IngestionLocation(Base):
     last_successful_ingestion_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     sensors_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    last_synced_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True,
+    last_synced_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(),
