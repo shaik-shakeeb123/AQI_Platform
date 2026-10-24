@@ -31,6 +31,18 @@ from api_layer.config import get_settings
 
 settings = get_settings()
 
+connect_args: dict[str, Any] = {
+    "connect_timeout": 10,  # TCP connect timeout (seconds)
+}
+
+if "postgresql" in settings.DATABASE_URL or "postgres" in settings.DATABASE_URL:
+    connect_args.update({
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 3,
+    })
+
 engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
@@ -38,9 +50,7 @@ engine = create_engine(
     max_overflow=20,
     pool_recycle=1800,  # recycle connections every 30 min to avoid Render idle-TCP drops
     echo=settings.DEBUG,
-    connect_args={
-        "connect_timeout": 10,  # TCP connect timeout (seconds)
-    },
+    connect_args=connect_args,
 )
 
 @event.listens_for(engine, "connect")

@@ -300,11 +300,15 @@ class DataProcessor:
                 unit = ""
                 
             if not param_name:
-                # If sensor map didn't resolve it, try the v3 parameter object directly
-                param_obj = m.get("parameter", {})
+                # If sensor map didn't resolve it, try the parameter / pollutant object directly
+                param_obj = m.get("parameter")
                 if isinstance(param_obj, dict):
                     param_name = param_obj.get("name", "")
                     unit = param_obj.get("units", "")
+                elif isinstance(param_obj, str):
+                    param_name = param_obj
+                elif m.get("pollutant"):
+                    param_name = str(m.get("pollutant"))
 
             if not param_name:
                 continue
@@ -342,10 +346,9 @@ class DataProcessor:
                         "temperature": None, "humidity": None
                     }
 
-                # Unit conversion logic (omitted for brevity, assume valid inputs or handled below)
-                # We apply the existing unit conversions directly
+                unit_lower = str(unit).lower() if unit else ""
+                # Unit conversion logic
                 if normalized_param == "co":
-                    unit_lower = unit.lower()
                     if "ug" in unit_lower or "µg" in unit_lower:
                         val = val / 1000.0
                     elif "ppb" in unit_lower:
@@ -353,19 +356,16 @@ class DataProcessor:
                     elif "ppm" in unit_lower:
                         val = val * 1.145
                 elif normalized_param == "no2":
-                    unit_lower = unit.lower()
                     if "ppb" in unit_lower:
                         val = val * 1.882
                     elif "ppm" in unit_lower:
                         val = val * 1882.0
                 elif normalized_param == "so2":
-                    unit_lower = unit.lower()
                     if "ppb" in unit_lower:
                         val = val * 2.620
                     elif "ppm" in unit_lower:
                         val = val * 2620.0
                 elif normalized_param == "o3":
-                    unit_lower = unit.lower()
                     if "ppb" in unit_lower:
                         val = val * 1.963
                     elif "ppm" in unit_lower:

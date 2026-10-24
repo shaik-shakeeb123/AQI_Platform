@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-import uuid
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -50,6 +50,8 @@ class IngestionCoordinator:
             weather_client=self.weather_client
         )
         self.planner = IngestionPlanner(self.db, self.provider)
+        if hasattr(self.db, "expire_on_commit"):
+            self.db.expire_on_commit = False
         
         # Will be populated
         self.run_record: Optional[IngestionRun] = None
@@ -116,6 +118,21 @@ class IngestionCoordinator:
                         ).replace(tzinfo=None)
                     except ValueError:
                         pass
+
+                # Extract and serialize sensors if present
+                sensors = raw_loc.get("sensors")
+                sensors_json_val = None
+                if sensors:
+                    s_map = {}
+                    for s in sensors:
+                        s_id = s.get("id")
+                        param = s.get("parameter") or {}
+                        p_name = param.get("name") if isinstance(param, dict) else str(param)
+                        p_unit = param.get("units", "") if isinstance(param, dict) else ""
+                        if s_id and p_name:
+                            s_map[str(s_id)] = [p_name.lower(), p_unit]
+                    if s_map:
+                        sensors_json_val = json.dumps(s_map)
                 
                 db_loc = existing_map.get(loc_id)
                 
@@ -129,6 +146,7 @@ class IngestionCoordinator:
                         provider_datetime_last=datetime_last,
                         is_active=True,
                         last_synced_at=datetime(2000, 1, 1),
+                        sensors_json=sensors_json_val,
                     )
                     self.db.add(db_loc)
                 else:
@@ -137,6 +155,8 @@ class IngestionCoordinator:
                     # Revive location if it has new metadata
                     if datetime_last and datetime_last > datetime.now() - timedelta(days=7):
                         db_loc.is_active = True
+                    if sensors_json_val and not db_loc.sensors_json:
+                        db_loc.sensors_json = sensors_json_val
                         
                         
             self.db.flush()
@@ -255,10 +275,14 @@ class IngestionCoordinator:
         
         if not locations:
             logger.info("[%s] No active locations need polling.", self.run_id)
-            return
+            return "SUCCESS"
             
         logger.info("[%s] Planned polling for %d active locations.", self.run_id, len(locations))
         
+        # Release the planning read transaction so self.db is NOT held open during async network polling
+        if not self.dry_run:
+            self.db.commit()
+
         now = datetime.now()
         has_failures = False
         queue = asyncio.Queue()
@@ -267,27 +291,51 @@ class IngestionCoordinator:
             queue.put_nowait(loc)
 
         def _sync_commit_batch(batch):
-            for loc, records, new_time in batch:
-                if not records:
-                    continue
-                for r in records:
-                    try:
-                        with self.db.begin_nested():
-                            self.db.add(r)
-                            self.db.flush()
-                        self.metrics.records_stored += 1
-                        if new_time and (loc.last_successful_ingestion_at is None or new_time > loc.last_successful_ingestion_at):
-                            loc.last_successful_ingestion_at = new_time
-                    except IntegrityError:
-                        self.metrics.duplicates_skipped += 1
+            committed_records = 0
+            for loc, status, records, new_time in batch:
+                if status == "SUCCESS" and records:
+                    for r in records:
+                        try:
+                            with self.db.begin_nested():
+                                self.db.add(r)
+                                self.db.flush()
+                            committed_records += 1
+                        except IntegrityError:
+                            self.metrics.duplicates_skipped += 1
+                    
+                    if new_time and (loc.last_successful_ingestion_at is None or new_time > loc.last_successful_ingestion_at):
+                        loc.last_successful_ingestion_at = new_time
+                    loc.last_synced_at = now
+
+                elif status in ("EMPTY", "PROCESSING_ERROR"):
+                    # HTTP request succeeded (either empty data or processing/validation failure).
+                    # Advance last_synced_at to prevent immediate tight-loop hammering,
+                    # but DO NOT advance last_successful_ingestion_at.
+                    loc.last_synced_at = now
+
+                elif status == "HTTP_ERROR":
+                    # HTTP request failed (network timeout, 5xx, etc.).
+                    # DO NOT advance last_synced_at or last_successful_ingestion_at!
+                    # Station remains eligible for retry in the next run.
+                    pass
             
             if not self.dry_run:
-                if self.run_record:
-                    self.run_record.openaq_requests = self.metrics.openaq_requests
-                    self.run_record.openaq_retries = self.metrics.openaq_retries
-                    self.run_record.openaq_errors = self.metrics.openaq_errors
-                    self.run_record.records_stored = self.metrics.records_stored
-                self.db.commit()
+                try:
+                    self.db.commit()
+                    # Authoritative counter: increment ONLY after durable database commit
+                    self.metrics.records_stored += committed_records
+                    if self.run_record:
+                        self.run_record.records_stored = self.metrics.records_stored
+                        self.run_record.openaq_requests = self.metrics.openaq_requests
+                        self.run_record.openaq_retries = self.metrics.openaq_retries
+                        self.run_record.openaq_errors = self.metrics.openaq_errors
+                except Exception as commit_err:
+                    logger.error("[%s] Database commit failed in batch writer: %s", self.run_id, commit_err)
+                    self.db.rollback()
+                    raise commit_err
+            else:
+                # Dry run: records were not durably stored; records_stored remains 0
+                pass
 
         async def _db_writer():
             batch = []
@@ -318,29 +366,42 @@ class IngestionCoordinator:
                     
                 try:
                     res = await self.provider_adapter.get_latest_measurements(loc.provider_location_id)
-                    
-                    # If we reached here, the HTTP request succeeded (or returned expected empty data)
-                    loc.last_synced_at = now
-                    
-                    results = res.get("results", [])
-                    self.metrics.records_fetched += len(results)
-                    
-                    records_to_insert, new_time = await self.processor.process_and_store(loc, results)
-                    if not records_to_insert and not new_time and results:
-                         has_failures = True
-                    else:
-                         await db_queue.put((loc, records_to_insert, new_time))
-                            
-                except Exception as e:
+                except Exception as http_err:
                     has_failures = True
-                    logger.error("[%s] Error processing location %d: %s", self.run_id, loc.provider_location_id, e)
+                    logger.error("[%s] HTTP error fetching location %d: %s", self.run_id, loc.provider_location_id, http_err)
                     from api_layer.exceptions import ExternalAPIException
-                    if isinstance(e, ExternalAPIException) and e.status_code in (401, 403, 502):
-                        if "authentication" in str(e.detail).lower() or "authorization" in str(e.detail).lower() or "401" in str(e.detail) or "403" in str(e.detail):
-                            raise e
-                finally:
+                    if isinstance(http_err, ExternalAPIException) and http_err.status_code in (401, 403, 502):
+                        if "authentication" in str(http_err.detail).lower() or "authorization" in str(http_err.detail).lower() or "401" in str(http_err.detail) or "403" in str(http_err.detail):
+                            raise http_err
+                    # Network timeout / HTTP error: DO NOT advance last_synced_at.
+                    await db_queue.put((loc, "HTTP_ERROR", [], None))
                     self.metrics.locations_attempted += 1
                     queue.task_done()
+                    continue
+
+                # HTTP call succeeded:
+                results = res.get("results", [])
+                self.metrics.records_fetched += len(results)
+
+                if not results:
+                    # Successful empty response: advance last_synced_at to prevent immediate hammering
+                    await db_queue.put((loc, "EMPTY", [], None))
+                else:
+                    try:
+                        records_to_insert, new_time = await self.processor.process_and_store(loc, results)
+                        if not records_to_insert and not new_time:
+                            # Results existed but produced no valid records (malformed/invalid data)
+                            has_failures = True
+                            await db_queue.put((loc, "PROCESSING_ERROR", [], None))
+                        else:
+                            await db_queue.put((loc, "SUCCESS", records_to_insert, new_time))
+                    except Exception as proc_err:
+                        has_failures = True
+                        logger.error("[%s] Error processing location %d: %s", self.run_id, loc.provider_location_id, proc_err)
+                        await db_queue.put((loc, "PROCESSING_ERROR", [], None))
+
+                self.metrics.locations_attempted += 1
+                queue.task_done()
 
         from api_layer.config import get_settings
         num_workers = min(get_settings().MAX_PROVIDER_CONCURRENCY, len(locations))
@@ -478,7 +539,10 @@ class IngestionCoordinator:
                     self.run_record.openaq_retries = self.metrics.openaq_retries
                     self.run_record.openaq_errors = self.metrics.openaq_errors
                     self.run_record.records_stored = self.metrics.records_stored
-                self.db.commit()
+                try:
+                    self.db.commit()
+                except Exception as commit_err:
+                    logger.warning("[%s] Final commit encountered error: %s", self.run_id, commit_err)
             else:
                 self.db.rollback()
                 logger.info("[%s] Dry run finished. Rolled back.", self.run_id)

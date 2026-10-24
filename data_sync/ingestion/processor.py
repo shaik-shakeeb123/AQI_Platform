@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -68,7 +69,7 @@ class IngestionProcessor:
     ) -> Tuple[list[AQIData], Optional[datetime]]:
         """Process a location's measurements and return records to store."""
         if not raw_measurements:
-            self.metrics.records_rejected += 1
+            # Empty response for this station; no records to validate or reject
             return [], None
             
         # Extract the exact measurement timestamp from the raw payload safely
@@ -88,21 +89,34 @@ class IngestionProcessor:
             self.metrics.duplicates_skipped += 1
             return [], None
 
-        # Process measurements using legacy rules
-        # Mocking the legacy sensor map since v3 /latest doesn't strictly need it if we parse directly
-        # But we must adhere to `process_measurements` signature
-        
-        # OpenAQ v3 /latest payload structure for a location typically contains a `results` array of measurements
-        # Let's map it into the format expected by process_measurements
-        sensors_mock = {} 
+        # Build sensor map from cached sensors_json or raw measurements
+        sensors_mock = {}
+        if loc.sensors_json:
+            try:
+                cached = json.loads(loc.sensors_json)
+                if isinstance(cached, dict):
+                    sensors_mock.update({
+                        int(k) if str(k).isdigit() else k: tuple(v) if isinstance(v, list) else (str(v), "")
+                        for k, v in cached.items()
+                    })
+            except Exception:
+                pass
+
         for m in raw_measurements:
-            param = m.get("parameter", {}).get("name", "")
-            if not param:
-                continue
-            unit = m.get("parameter", {}).get("units", "")
+            param_obj = m.get("parameter")
+            param_name = ""
+            unit = ""
+            if isinstance(param_obj, dict):
+                param_name = param_obj.get("name", "")
+                unit = param_obj.get("units", "")
+            elif isinstance(param_obj, str):
+                param_name = param_obj
+            elif m.get("pollutant"):
+                param_name = str(m.get("pollutant"))
+
             sensor_id = m.get("sensorsId") or m.get("sensorId") or m.get("id")
-            if sensor_id:
-                sensors_mock[sensor_id] = (param.lower(), unit)
+            if sensor_id and param_name:
+                sensors_mock[sensor_id] = (param_name.lower(), unit)
 
         try:
             grouped_records = DataProcessor.process_measurements(raw_measurements, sensors_mock)

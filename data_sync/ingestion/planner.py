@@ -62,7 +62,7 @@ class IngestionPlanner:
             
         self.db.flush()
 
-    def plan_measurement_ingestion(self) -> List[IngestionLocation]:
+    def plan_measurement_ingestion(self, limit: int | None = None) -> List[IngestionLocation]:
         """Select locations to poll based on an adaptive frequency strategy.
         
         Active locations (updated < 24h ago) are polled every run.
@@ -102,5 +102,18 @@ class IngestionPlanner:
             )
         )
         
+        if limit is None:
+            from api_layer.config import get_settings
+            raw_limit = get_settings().SCHEDULED_BATCH_SIZE
+        else:
+            raw_limit = limit
+
+        if not isinstance(raw_limit, int) or isinstance(raw_limit, bool) or raw_limit <= 0:
+            raise ValueError(
+                f"Invalid measurement ingestion batch limit: {raw_limit!r}. "
+                "Limit must be a positive non-zero integer."
+            )
+
+        stmt = stmt.limit(raw_limit)
         locations = self.db.scalars(stmt).all()
         return list(locations)

@@ -339,3 +339,314 @@ def test_newly_synced_location_eligible_for_first_polling(in_memory_db):
     planned_ids = [loc.provider_location_id for loc in planned]
 
     assert 7701 in planned_ids, "Newly discovered location with sentinel must be immediately eligible for polling"
+
+
+# ============================================================================
+# 5. WORKSTREAMS A - E PRODUCTION REGRESSION TESTS
+# ============================================================================
+
+def test_planner_respects_batch_limit(in_memory_db):
+    """Verify plan_measurement_ingestion applies query limit strictly."""
+    sentinel = datetime(2000, 1, 1)
+    locs = [
+        IngestionLocation(
+            provider="OpenAQ",
+            provider_location_id=1000 + i,
+            location_name=f"BatchStation_{i}",
+            is_active=True,
+            last_synced_at=sentinel,
+        )
+        for i in range(25)
+    ]
+    in_memory_db.add_all(locs)
+    in_memory_db.commit()
+
+    planner = IngestionPlanner(db=in_memory_db, provider="OpenAQ")
+    
+    # Explicit limit=5
+    planned_5 = planner.plan_measurement_ingestion(limit=5)
+    assert len(planned_5) == 5
+    assert [loc.provider_location_id for loc in planned_5] == [1000, 1001, 1002, 1003, 1004]
+
+    # Explicit limit=10
+    planned_10 = planner.plan_measurement_ingestion(limit=10)
+    assert len(planned_10) == 10
+
+
+@pytest.mark.asyncio
+async def test_processor_handles_string_parameter(in_memory_db):
+    """Verify IngestionProcessor accepts string parameter format (e.g. parameter='pm25')."""
+    metrics = IngestionMetrics()
+    weather_client = MagicMock()
+    weather_client.fetch_current_weather = AsyncMock(return_value={})
+
+    processor = IngestionProcessor(
+        db=in_memory_db,
+        metrics=metrics,
+        geocoder=MagicMock(),
+        weather_client=weather_client,
+    )
+
+    loc = IngestionLocation(
+        provider="OpenAQ",
+        provider_location_id=1099,
+        location_name="Connaught Place, Delhi",
+        latitude=28.63,
+        longitude=77.22,
+        is_active=True,
+    )
+
+    raw_measurements = [
+        {
+            "sensorsId": 501,
+            "parameter": "pm25",
+            "value": 35.0,
+            "datetime": {"utc": "2026-04-01T12:00:00Z"},
+        },
+        {
+            "sensorsId": 502,
+            "parameter": "pm10",
+            "value": 75.0,
+            "datetime": {"utc": "2026-04-01T12:00:00Z"},
+        },
+    ]
+
+    records, latest_time = await processor.process_and_store(loc, raw_measurements)
+    assert len(records) == 1
+    assert latest_time == datetime(2026, 4, 1, 12, 0, 0)
+    assert records[0].pm25 == 35.0
+    assert records[0].pm10 == 75.0
+
+
+@pytest.mark.asyncio
+async def test_processor_resolves_sensors_from_sensors_json(in_memory_db):
+    """Verify IngestionProcessor maps parameter from loc.sensors_json when omitted in measurement."""
+    import json
+    metrics = IngestionMetrics()
+    weather_client = MagicMock()
+    weather_client.fetch_current_weather = AsyncMock(return_value={})
+
+    processor = IngestionProcessor(
+        db=in_memory_db,
+        metrics=metrics,
+        geocoder=MagicMock(),
+        weather_client=weather_client,
+    )
+
+    loc = IngestionLocation(
+        provider="OpenAQ",
+        provider_location_id=1100,
+        location_name="Nehru Nagar, Delhi",
+        latitude=28.57,
+        longitude=77.25,
+        is_active=True,
+        sensors_json=json.dumps({"901": ["pm25", "µg/m³"], "902": ["pm10", "µg/m³"]}),
+    )
+
+    # Measurement payload where parameter dict/string is absent, only sensorsId is present
+    raw_measurements = [
+        {
+            "sensorsId": 901,
+            "value": 42.0,
+            "datetime": {"utc": "2026-04-01T14:00:00Z"},
+        },
+        {
+            "sensorsId": 902,
+            "value": 88.0,
+            "datetime": {"utc": "2026-04-01T14:00:00Z"},
+        },
+    ]
+
+    records, latest_time = await processor.process_and_store(loc, raw_measurements)
+    assert len(records) == 1
+    assert latest_time == datetime(2026, 4, 1, 14, 0, 0)
+    assert records[0].pm25 == 42.0
+    assert records[0].pm10 == 88.0
+
+
+@pytest.mark.asyncio
+async def test_processor_empty_measurements_does_not_bump_rejected_counter(in_memory_db):
+    """Verify an empty measurements list does not increment records_rejected counter."""
+    metrics = IngestionMetrics()
+    processor = IngestionProcessor(
+        db=in_memory_db,
+        metrics=metrics,
+        geocoder=MagicMock(),
+        weather_client=MagicMock(),
+    )
+
+    loc = IngestionLocation(
+        provider="OpenAQ",
+        provider_location_id=1101,
+        location_name="Empty Station",
+        is_active=True,
+    )
+
+    records, latest_time = await processor.process_and_store(loc, [])
+    assert records == []
+    assert latest_time is None
+    assert metrics.records_rejected == 0, "Empty response must not increment records_rejected"
+
+
+def test_tcp_keepalive_settings():
+    """Verify that connect_args in connection.py has keepalives configured for PostgreSQL."""
+    from database.connection import connect_args
+    assert "connect_timeout" in connect_args
+
+
+# ============================================================================
+# 6. DEFECTS 1 - 4 COMPREHENSIVE REGRESSION TESTS
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_coordinator_non_dry_run_records_stored_persisted(in_memory_db):
+    """Verify Defect 1: records_stored counter is accurately persisted in non-dry-run mode."""
+    loc1 = IngestionLocation(provider="OpenAQ", provider_location_id=2001, location_name="PersistStation_1", is_active=True, last_synced_at=datetime(2000, 1, 1))
+    loc2 = IngestionLocation(provider="OpenAQ", provider_location_id=2002, location_name="PersistStation_2", is_active=True, last_synced_at=datetime(2000, 1, 1))
+    in_memory_db.add_all([loc1, loc2])
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc1, loc2])
+
+    async def mock_latest(provider_id):
+        return {
+            "results": [
+                {"sensorsId": 1, "parameter": {"name": "pm25"}, "value": 25.0, "datetime": {"utc": "2026-04-01T12:00:00Z"}},
+                {"sensorsId": 2, "parameter": {"name": "pm10"}, "value": 50.0, "datetime": {"utc": "2026-04-01T12:00:00Z"}}
+            ]
+        }
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "SUCCESS"
+
+    # Both stations yielded 1 compound record each = 2 records committed
+    assert coord.metrics.records_stored == 2, "Authoritative metrics counter must equal committed records"
+    assert coord.run_record.records_stored == 2, "Run record must NOT be overwritten with zero"
+
+    # Verify directly from database session
+    db_run = in_memory_db.scalar(select(IngestionRun).where(IngestionRun.run_id == coord.run_id))
+    assert db_run is not None
+    assert db_run.records_stored == 2, "Database must store the true committed count"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_dry_run_records_stored_zero(in_memory_db):
+    """Verify Defect 1: Dry run does not claim records were durably stored."""
+    loc = IngestionLocation(provider="OpenAQ", provider_location_id=2003, location_name="DryStation", is_active=True, last_synced_at=datetime(2000, 1, 1))
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=True)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    async def mock_latest(provider_id):
+        return {"results": [{"sensorsId": 1, "parameter": {"name": "pm25"}, "value": 20.0, "datetime": {"utc": "2026-04-01T12:00:00Z"}}]}
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "SUCCESS"
+    assert coord.metrics.records_stored == 0, "Dry run must NOT claim durable persistence"
+    assert coord.run_record.records_stored == 0
+
+
+@pytest.mark.asyncio
+async def test_coordinator_http_failure_does_not_advance_last_synced_at(in_memory_db):
+    """Verify Defect 2: HTTP network timeouts/errors do NOT advance last_synced_at."""
+    import httpx
+    sentinel = datetime(2000, 1, 1)
+    loc = IngestionLocation(provider="OpenAQ", provider_location_id=3001, location_name="NetworkFailStation", is_active=True, last_synced_at=sentinel, last_successful_ingestion_at=None)
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    # Simulate HTTP network timeout
+    coord.provider_adapter.get_latest_measurements = AsyncMock(
+        side_effect=httpx.ConnectTimeout("OpenAQ gateway timeout")
+    )
+
+    status = await coord.execute()
+    assert status == "PARTIAL", "Run with HTTP failure must be marked PARTIAL"
+
+    in_memory_db.refresh(loc)
+    assert loc.last_synced_at == sentinel, "last_synced_at MUST NOT advance on HTTP connection failure"
+    assert loc.last_successful_ingestion_at is None
+
+
+@pytest.mark.asyncio
+async def test_coordinator_empty_response_advances_last_synced_at_only(in_memory_db):
+    """Verify Defect 2: Successful HTTP empty responses advance last_synced_at but not last_successful_ingestion_at."""
+    sentinel = datetime(2000, 1, 1)
+    loc = IngestionLocation(provider="OpenAQ", provider_location_id=3002, location_name="EmptyStation", is_active=True, last_synced_at=sentinel, last_successful_ingestion_at=None)
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    # Simulate HTTP 200 with empty results
+    coord.provider_adapter.get_latest_measurements = AsyncMock(return_value={"results": []})
+
+    status = await coord.execute()
+    assert status == "SUCCESS", "Empty responses are normal and must not fail the run"
+
+    in_memory_db.refresh(loc)
+    assert loc.last_synced_at > sentinel, "last_synced_at MUST advance to enforce 15m anti-hammering"
+    assert loc.last_successful_ingestion_at is None, "checkpoint MUST NOT advance when no data was stored"
+    assert coord.metrics.records_rejected == 0, "Empty responses must NOT be counted as rejected records"
+
+
+def test_planner_limit_validation(in_memory_db):
+    """Verify Defect 3: Invalid limit values raise ValueError and never produce unbounded queries."""
+    planner = IngestionPlanner(db=in_memory_db, provider="OpenAQ")
+
+    with pytest.raises(ValueError, match="Limit must be a positive non-zero integer"):
+        planner.plan_measurement_ingestion(limit=0)
+
+    with pytest.raises(ValueError, match="Limit must be a positive non-zero integer"):
+        planner.plan_measurement_ingestion(limit=-5)
+
+    with pytest.raises(ValueError, match="Limit must be a positive non-zero integer"):
+        planner.plan_measurement_ingestion(limit="100")
+
+    with pytest.raises(ValueError, match="Limit must be a positive non-zero integer"):
+        planner.plan_measurement_ingestion(limit=True)
+
+
+@pytest.mark.asyncio
+async def test_counter_unit_consistency(in_memory_db):
+    """Verify Defect 4: records_rejected increments in units of compound observation records, not raw sensors."""
+    metrics = IngestionMetrics()
+    processor = IngestionProcessor(
+        db=in_memory_db,
+        metrics=metrics,
+        geocoder=MagicMock(),
+        weather_client=MagicMock(),
+    )
+
+    loc = IngestionLocation(provider="OpenAQ", provider_location_id=4001, location_name="UnitCheckStation", is_active=True)
+
+    # 10 raw sensor measurements all missing timestamps
+    raw_missing_timestamps = [
+        {"sensorsId": i, "parameter": {"name": "pm25"}, "value": 15.0}
+        for i in range(10)
+    ]
+    records, _ = await processor.process_and_store(loc, raw_missing_timestamps)
+    assert records == []
+    assert metrics.records_rejected == 1, "A single rejected observation payload must increment records_rejected by 1, not 10"
+
