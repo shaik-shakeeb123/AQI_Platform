@@ -554,8 +554,10 @@ class CurrentAQIService:
                 pass
 
         openmeteo_dur = (time.perf_counter() - openmeteo_start) * 1000.0
+        weather_enriched = bool(weather_data and "current" in weather_data)
+        weather_status = "Enriched" if weather_enriched else "Unavailable (429/Fallback Dropped)"
         logger.info(
-            f"Provider: Open-Meteo | Status: Success | Duration: {openmeteo_dur:.2f}ms | City: {city}"
+            f"Provider: Open-Meteo | Status: Success | Weather: {weather_status} | Duration: {openmeteo_dur:.2f}ms | City: {city}"
         )
 
         metadata = RollingAverageMetadata(
