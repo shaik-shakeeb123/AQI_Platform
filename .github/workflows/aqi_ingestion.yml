@@ -2,10 +2,9 @@ name: Scheduled AQI Ingestion
 
 on:
   schedule:
-    # Runs every 30 minutes at minutes 0 and 30 past the hour
-    - cron: '*/30 * * * *'
-  workflow_dispatch: # Allows manual execution from the GitHub Actions UI
-
+    # Runs every 30 minutes at minutes 15 and 45
+    - cron: '15,45 * * * *'
+  workflow_dispatch:
 jobs:
   ingest_aqi_data:
     name: Run AQI Ingestion Job
