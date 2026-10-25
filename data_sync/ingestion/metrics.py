@@ -13,6 +13,12 @@ class IngestionMetrics:
     locations_attempted: int = 0  # Locations where HTTP retrieval was actively initiated
     locations_skipped: int = 0    # Planned locations unpolled due to abort, budget, or cancellation
 
+    # Location outcomes (Unit: distinct station locations)
+    locations_successful: int = 0         # Locations with at least one record persisted
+    locations_empty: int = 0              # Locations with valid response but 0 observations
+    locations_processing_errors: int = 0  # Locations where payload failed parsing/validation
+    locations_http_errors: int = 0        # Locations where HTTP retrieval failed
+
     # Record metrics (Units documented below)
     records_fetched: int = 0      # Unit: raw sensor measurements from OpenAQ results array
     records_validated: int = 0    # Unit: time-grouped observation records passing AQIDataValidate schema
@@ -61,7 +67,10 @@ class IngestionMetrics:
     def summarize(self) -> str:
         """Return a human-readable summary of the metrics."""
         return (
-            f"Locs(examined={self.locations_examined}, attempted={self.locations_attempted}, skipped={self.locations_skipped}) | "
+            f"Locs(examined={self.locations_examined}, attempted={self.locations_attempted}, "
+            f"ok={self.locations_successful}, empty={self.locations_empty}, "
+            f"proc_err={self.locations_processing_errors}, http_err={self.locations_http_errors}, "
+            f"skipped={self.locations_skipped}) | "
             f"Recs(fetched={self.records_fetched}, stored={self.records_stored}, rejected={self.records_rejected}, dups={self.duplicates_skipped}) | "
             f"Gov(admit={self.requests_admitted}, compl={self.requests_completed}, 429={self.count_429}, paused={self.rate_limit_pauses}) | "
             f"API(retries={self.openaq_retries}, errs={self.openaq_errors}, nom={self.nominatim_requests}, meteo={self.openmeteo_requests})"

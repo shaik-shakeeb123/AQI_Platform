@@ -9,8 +9,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from sqlalchemy.orm import Session
-from sqlalchemy import select, func, text, desc
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import select, func, text, desc, or_
 from sqlalchemy.exc import IntegrityError
 
 from api_layer.logging import get_logger
@@ -19,6 +19,7 @@ from data_sync.ingestion.metrics import IngestionMetrics
 from data_sync.ingestion.planner import IngestionPlanner
 from data_sync.ingestion.provider import OpenAQAdapter
 from data_sync.ingestion.processor import IngestionProcessor
+from data_sync.data_processor import parse_and_validate_sensors_json, merge_sensor_maps
 from data_sync.clients.nominatim_client import NominatimGeocoderClient
 from data_sync.clients.openmeteo_weather_client import OpenMeteoWeatherClient
 from api_layer.config import get_settings
@@ -31,9 +32,15 @@ INGESTION_LOCK_ID = 8273645
 class IngestionCoordinator:
     """Orchestrates metadata sync and measurement ingestion with safety bounds."""
 
-    def __init__(self, db: Session, dry_run: bool = False) -> None:
+    def __init__(self, db: Session, dry_run: bool = False, batch_limit: Optional[int] = None) -> None:
+        if batch_limit is not None:
+            if not isinstance(batch_limit, int) or isinstance(batch_limit, bool) or batch_limit <= 0:
+                raise ValueError(
+                    f"Invalid batch_limit: {batch_limit!r}. Limit must be a positive non-zero integer."
+                )
         self.db = db
         self.dry_run = dry_run
+        self.batch_limit = batch_limit
         self.run_id = str(uuid.uuid4())
         self.provider = "OpenAQ"
         
@@ -121,22 +128,22 @@ class IngestionCoordinator:
 
                 # Extract and serialize sensors if present
                 sensors = raw_loc.get("sensors")
-                sensors_json_val = None
-                if sensors:
-                    s_map = {}
+                new_s_map = {}
+                if sensors and isinstance(sensors, list):
                     for s in sensors:
+                        if not isinstance(s, dict):
+                            continue
                         s_id = s.get("id")
                         param = s.get("parameter") or {}
-                        p_name = param.get("name") if isinstance(param, dict) else str(param)
+                        p_name = param.get("name") if isinstance(param, dict) else str(param) if param else ""
                         p_unit = param.get("units", "") if isinstance(param, dict) else ""
-                        if s_id and p_name:
-                            s_map[str(s_id)] = [p_name.lower(), p_unit]
-                    if s_map:
-                        sensors_json_val = json.dumps(s_map)
+                        if s_id is not None and p_name:
+                            new_s_map[str(s_id).strip()] = (p_name.strip().lower(), str(p_unit).strip())
                 
                 db_loc = existing_map.get(loc_id)
                 
                 if not db_loc:
+                    sensors_json_val = json.dumps({k: list(v) for k, v in new_s_map.items()}) if new_s_map else "{}"
                     db_loc = IngestionLocation(
                         provider=self.provider,
                         provider_location_id=loc_id,
@@ -155,9 +162,15 @@ class IngestionCoordinator:
                     # Revive location if it has new metadata
                     if datetime_last and datetime_last > datetime.now() - timedelta(days=7):
                         db_loc.is_active = True
-                    if sensors_json_val and not db_loc.sensors_json:
-                        db_loc.sensors_json = sensors_json_val
-                        
+                    # Safely merge sensor definitions without overwriting existing valid metadata
+                    if new_s_map:
+                        existing_sensors = parse_and_validate_sensors_json(db_loc.sensors_json)
+                        merged = merge_sensor_maps(existing_sensors, new_s_map)
+                        if merged:
+                            db_loc.sensors_json = json.dumps({k: list(v) for k, v in merged.items()})
+                    elif db_loc.sensors_json is None or db_loc.sensors_json == "":
+                        # Upstream confirmed to have no sensors for this station
+                        db_loc.sensors_json = "{}"
                         
             self.db.flush()
             
@@ -177,22 +190,80 @@ class IngestionCoordinator:
         logger.info("[%s] Completed Metadata Sync", self.run_id)
 
     async def _should_run_metadata_sync(self) -> bool:
-        """Decide if a metadata sync is needed (e.g., every 6 hours or if empty catalog)."""
+        """Decide if a metadata sync is needed (empty catalog, stale metadata, or missing sensor mappings)."""
         count = self.db.scalar(select(func.count()).select_from(IngestionLocation))
         if count == 0:
             return True
-            
-        # Check time since last global metadata sync using the first active location's updated_at?
-        # Actually a simpler heuristic: check if any station was added/updated in the last 6h
-        # Wait, just checking if we haven't synced ANY location's metadata for 6h.
+
+        # Check if active stations lack sensor metadata (uninitialized None or empty string)
+        # Note: Confirmed empty stations have sensors_json == "{}" and do not trigger full catalog sync.
+        missing_count = self.db.scalar(
+            select(func.count()).select_from(IngestionLocation).where(
+                IngestionLocation.provider == self.provider,
+                IngestionLocation.is_active == True,
+                or_(
+                    IngestionLocation.sensors_json == None,
+                    IngestionLocation.sensors_json == "",
+                )
+            )
+        )
+        if missing_count and missing_count > 0:
+            logger.info(
+                "[%s] Metadata sync required: %d active stations lack sensor mappings.",
+                self.run_id, missing_count
+            )
+            return True
+
+        # Check time since last global metadata sync
         last_sync = self.db.scalar(
             select(func.max(IngestionLocation.updated_at))
         )
         if last_sync and last_sync < datetime.now() - timedelta(hours=6):
             return True
-            
+
         return False
 
+    async def repair_location_sensor_metadata(self, loc: IngestionLocation) -> bool:
+        """Fetch targeted location metadata for a specific station missing sensor mappings."""
+        try:
+            res = await self.provider_adapter.get_location(loc.provider_location_id)
+            results = res.get("results", [])
+            raw_loc = results[0] if isinstance(results, list) and results else results if isinstance(results, dict) else {}
+            sensors = raw_loc.get("sensors") if isinstance(raw_loc, dict) else None
+            if sensors and isinstance(sensors, list):
+                s_map = {}
+                for s in sensors:
+                    if not isinstance(s, dict):
+                        continue
+                    s_id = s.get("id")
+                    param = s.get("parameter") or {}
+                    p_name = param.get("name") if isinstance(param, dict) else str(param) if param else ""
+                    p_unit = param.get("units", "") if isinstance(param, dict) else ""
+                    if s_id is not None and p_name:
+                        s_map[str(s_id).strip()] = (p_name.strip().lower(), str(p_unit).strip())
+                if s_map:
+                    existing = parse_and_validate_sensors_json(loc.sensors_json)
+                    merged = merge_sensor_maps(existing, s_map)
+                    loc.sensors_json = json.dumps({k: list(v) for k, v in merged.items()})
+                    logger.info(
+                        "[%s] Repaired sensor metadata for station %d (%d sensors mapped).",
+                        self.run_id, loc.provider_location_id, len(merged)
+                    )
+                    return True
+                else:
+                    # Station returned empty sensor list upstream; mark as confirmed empty catalog
+                    loc.sensors_json = "{}"
+                    return False
+            else:
+                # No sensors array in response; mark as confirmed empty catalog
+                loc.sensors_json = "{}"
+                return False
+        except Exception as e:
+            logger.warning(
+                "[%s] Targeted metadata repair failed for location %d: %s",
+                self.run_id, loc.provider_location_id, e
+            )
+        return False
 
     async def _check_db_backed_hourly_budget(self) -> bool:
         """Pre-flight check: query ingestion_runs for requests issued in the last 60 minutes.
@@ -254,9 +325,6 @@ class IngestionCoordinator:
             "(budget=%d).",
             self.run_id, trailing_hour_requests, remaining, budget,
         )
-        # Set the governor's hourly budget cap directly to the remaining headroom for this run.
-        # This guarantees this process cannot exceed `remaining` requests.
-        # Eliminates synthetic timestamp priming and rolling window edge-case bugs.
         gov = self.provider_adapter.governor
         gov.hourly_budget = remaining
         gov._request_timestamps.clear()
@@ -270,7 +338,7 @@ class IngestionCoordinator:
         self.run_record.watermark_before = watermark_before
         
         # 2. Get planned locations
-        locations = self.planner.plan_measurement_ingestion()
+        locations = self.planner.plan_measurement_ingestion(limit=self.batch_limit)
         self.metrics.locations_examined = len(locations)
         
         if not locations:
@@ -306,6 +374,7 @@ class IngestionCoordinator:
                     if new_time and (loc.last_successful_ingestion_at is None or new_time > loc.last_successful_ingestion_at):
                         loc.last_successful_ingestion_at = new_time
                     loc.last_synced_at = now
+                    self.metrics.locations_successful += 1
 
                 elif status in ("EMPTY", "PROCESSING_ERROR"):
                     # HTTP request succeeded (either empty data or processing/validation failure).
@@ -363,11 +432,12 @@ class IngestionCoordinator:
                     loc = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                    
+
                 try:
                     res = await self.provider_adapter.get_latest_measurements(loc.provider_location_id)
                 except Exception as http_err:
                     has_failures = True
+                    self.metrics.locations_http_errors += 1
                     logger.error("[%s] HTTP error fetching location %d: %s", self.run_id, loc.provider_location_id, http_err)
                     from api_layer.exceptions import ExternalAPIException
                     if isinstance(http_err, ExternalAPIException) and http_err.status_code in (401, 403, 502):
@@ -385,6 +455,7 @@ class IngestionCoordinator:
 
                 if not results:
                     # Successful empty response: advance last_synced_at to prevent immediate hammering
+                    self.metrics.locations_empty += 1
                     await db_queue.put((loc, "EMPTY", [], None))
                 else:
                     try:
@@ -392,11 +463,13 @@ class IngestionCoordinator:
                         if not records_to_insert and not new_time:
                             # Results existed but produced no valid records (malformed/invalid data)
                             has_failures = True
+                            self.metrics.locations_processing_errors += 1
                             await db_queue.put((loc, "PROCESSING_ERROR", [], None))
                         else:
                             await db_queue.put((loc, "SUCCESS", records_to_insert, new_time))
                     except Exception as proc_err:
                         has_failures = True
+                        self.metrics.locations_processing_errors += 1
                         logger.error("[%s] Error processing location %d: %s", self.run_id, loc.provider_location_id, proc_err)
                         await db_queue.put((loc, "PROCESSING_ERROR", [], None))
 
@@ -449,33 +522,35 @@ class IngestionCoordinator:
                 return "SKIPPED_LOCKED"
 
             # 2. Clean up orphaned RUNNING runs from previous crashed processes
-            try:
-                self.db.execute(
-                    text(
-                        "UPDATE ingestion_runs "
-                        "SET status = 'CRASHED', finished_at = CURRENT_TIMESTAMP, "
-                        "error_message = 'Process terminated unexpectedly (orphaned RUNNING status)' "
-                        "WHERE provider = :provider AND status = 'RUNNING' AND run_id != :current_run_id"
-                    ),
-                    {"provider": self.provider, "current_run_id": self.run_id}
-                )
-                self.db.commit()
-            except Exception as e:
-                logger.warning("[%s] Failed to clean up orphaned runs: %s", self.run_id, e)
-                
+            if not self.dry_run:
+                try:
+                    self.db.execute(
+                        text(
+                            "UPDATE ingestion_runs "
+                            "SET status = 'CRASHED', finished_at = CURRENT_TIMESTAMP, "
+                            "error_message = 'Process terminated unexpectedly (orphaned RUNNING status)' "
+                            "WHERE provider = :provider AND status = 'RUNNING' AND run_id != :current_run_id"
+                        ),
+                        {"provider": self.provider, "current_run_id": self.run_id}
+                    )
+                    self.db.commit()
+                except Exception as e:
+                    logger.warning("[%s] Failed to clean up orphaned runs: %s", self.run_id, e)
+            else:
+                logger.info("[%s] Dry run: skipping orphaned runs cleanup.", self.run_id)
+
             # 3. Setup Run Record
             self.run_record = IngestionRun(
                 run_id=self.run_id,
                 provider=self.provider,
                 mode="SCHEDULED",
                 dry_run=self.dry_run,
-                status="RUNNING"
+                status="RUNNING",
+                started_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
-            self.db.add(self.run_record)
             if not self.dry_run:
+                self.db.add(self.run_record)
                 self.db.commit()
-            else:
-                self.db.flush()
 
             # 5. DB-backed cross-process hourly budget pre-flight check
             # MUST execute BEFORE metadata sync to prevent metadata requests when budget is exhausted!
@@ -526,7 +601,8 @@ class IngestionCoordinator:
                 # Copy metrics to record
                 metrics_dict = self.metrics.to_dict()
                 for k, v in metrics_dict.items():
-                    setattr(self.run_record, k, v)
+                    if hasattr(self.run_record, k):
+                        setattr(self.run_record, k, v)
                     
                 logger.info("[%s] Completed. %s", self.run_id, self.metrics.summarize())
                 
@@ -544,8 +620,73 @@ class IngestionCoordinator:
                 except Exception as commit_err:
                     logger.warning("[%s] Final commit encountered error: %s", self.run_id, commit_err)
             else:
-                self.db.rollback()
-                logger.info("[%s] Dry run finished. Rolled back.", self.run_id)
+                # 1. Roll back the main ingestion session FIRST.
+                # Guarantees that any staged aqi_data inserts, ingestion_locations
+                # updates, and ingestion_state watermark updates are permanently aborted.
+                rollback_succeeded = False
+                try:
+                    self.db.rollback()
+                    rollback_succeeded = True
+                    logger.info("[%s] Dry run finished. Staged measurements and locations rolled back.", self.run_id)
+                except Exception as rb_err:
+                    logger.error("[%s] Error during dry run rollback: %s", self.run_id, rb_err)
+                    if self.run_record:
+                        self.run_record.status = "FAILED"
+                        self.run_record.error_message = f"Dry-run rollback failed: {rb_err}"
+
+                # 2. Persist the dry-run audit summary via an independent, short-lived session.
+                # The audit transaction is strictly isolated from the rolled-back session:
+                # it connects on its own transaction, adds ONLY the IngestionRun summary, and commits.
+                # If audit persistence fails, staged measurements are already rolled back and cannot be committed.
+                if rollback_succeeded and self.run_record:
+                    try:
+                        from sqlalchemy.engine import Engine, Connection
+                        bind = self.db.get_bind() if hasattr(self.db, "get_bind") else None
+                        if isinstance(bind, (Engine, Connection)):
+                            AuditSession = sessionmaker(bind=bind, expire_on_commit=False)
+                            with AuditSession() as audit_db:
+                                audit_run = IngestionRun(
+                                    run_id=self.run_id,
+                                    provider=self.provider,
+                                    mode=getattr(self.run_record, "mode", "SCHEDULED"),
+                                    dry_run=True,
+                                    status="DRY_RUN" if getattr(self.run_record, "status", None) == "SUCCESS" else getattr(self.run_record, "status", "DRY_RUN"),
+                                    started_at=getattr(self.run_record, "started_at", None),
+                                    finished_at=getattr(self.run_record, "finished_at", None),
+                                    watermark_before=getattr(self.run_record, "watermark_before", None),
+                                    watermark_after=getattr(self.run_record, "watermark_after", None),
+                                    locations_examined=self.metrics.locations_examined,
+                                    locations_attempted=self.metrics.locations_attempted,
+                                    locations_skipped=self.metrics.locations_skipped,
+                                    records_fetched=self.metrics.records_fetched,
+                                    records_validated=self.metrics.records_validated,
+                                    records_rejected=self.metrics.records_rejected,
+                                    records_stored=0,  # Invariant: records_stored must remain zero in dry-run
+                                    duplicates_skipped=self.metrics.duplicates_skipped,
+                                    openaq_requests=self.metrics.openaq_requests,
+                                    openaq_retries=self.metrics.openaq_retries,
+                                    openaq_rate_limits=self.metrics.openaq_rate_limits,
+                                    openaq_errors=self.metrics.openaq_errors,
+                                    nominatim_requests=self.metrics.nominatim_requests,
+                                    openmeteo_requests=self.metrics.openmeteo_requests,
+                                    execution_seconds=getattr(self.run_record, "execution_seconds", None),
+                                    error_message=getattr(self.run_record, "error_message", None),
+                                )
+                                audit_db.add(audit_run)
+                                audit_db.commit()
+                                logger.info(
+                                    "[%s] Dry-run audit summary persisted to ingestion_runs (status: %s).",
+                                    self.run_id, audit_run.status
+                                )
+                        else:
+                            logger.info(
+                                "[%s] Non-engine DB bind detected (test mock); skipping audit persistence.",
+                                self.run_id
+                            )
+                    except Exception as audit_err:
+                        logger.error("[%s] Failed to persist dry-run audit summary: %s", self.run_id, audit_err)
+                        self.run_record.status = "FAILED"
+                        self.run_record.error_message = f"Dry-run audit persistence failed: {audit_err}"
                 
             await self._release_lock()
                 

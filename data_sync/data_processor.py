@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Tuple, Optional
 
 from database.schemas.aqi_data import AQIDataValidate
@@ -213,6 +214,107 @@ def extract_measurement_datetime(m: Any) -> Optional[datetime]:
         return None
 
 
+def parse_and_validate_sensors_json(raw_json: Optional[str]) -> Dict[str, Tuple[str, str]]:
+    """Safely parse sensors_json string into a normalized map of str(sensor_id) -> (param_name, units).
+
+    Guarantees:
+    - Never raises on None, empty string, non-dict JSON, or malformed JSON.
+    - Sensor IDs are normalized as stripped strings.
+    - Parameter names are normalized to lower-case.
+    """
+    if not raw_json or not isinstance(raw_json, str):
+        return {}
+    try:
+        data = json.loads(raw_json)
+        if not isinstance(data, dict):
+            return {}
+        result: Dict[str, Tuple[str, str]] = {}
+        for k, v in data.items():
+            s_id = str(k).strip()
+            if not s_id:
+                continue
+            if isinstance(v, (list, tuple)) and len(v) >= 1:
+                p_name = str(v[0]).strip().lower()
+                unit = str(v[1]).strip() if len(v) > 1 and v[1] else ""
+                if p_name:
+                    result[s_id] = (p_name, unit)
+            elif isinstance(v, str):
+                p_name = v.strip().lower()
+                if p_name:
+                    result[s_id] = (p_name, "")
+        return result
+    except Exception:
+        return {}
+
+
+def merge_sensor_maps(
+    existing_map: Dict[str, Tuple[str, str]],
+    new_map: Dict[str, Tuple[str, str]]
+) -> Dict[str, Tuple[str, str]]:
+    """Merge new sensor definitions into existing without overwriting valid data with empty/invalid data."""
+    merged = dict(existing_map)
+    for s_id, (p_name, unit) in new_map.items():
+        s_id_str = str(s_id).strip()
+        if not s_id_str or not p_name:
+            continue
+        p_name_clean = str(p_name).strip().lower()
+        unit_clean = str(unit).strip() if unit else ""
+        if s_id_str not in merged:
+            merged[s_id_str] = (p_name_clean, unit_clean)
+        else:
+            curr_name, curr_unit = merged[s_id_str]
+            if curr_name == p_name_clean and not curr_unit and unit_clean:
+                merged[s_id_str] = (curr_name, unit_clean)
+            elif not curr_name and p_name_clean:
+                merged[s_id_str] = (p_name_clean, unit_clean)
+    return merged
+
+
+def lookup_sensor_mapping(sensor_map: dict, s_id: Any) -> Optional[Tuple[str, str]]:
+    """Look up a sensor ID in a sensor map supporting both string and integer keys."""
+    if not sensor_map or s_id is None:
+        return None
+    if s_id in sensor_map:
+        val = sensor_map[s_id]
+        return tuple(val) if isinstance(val, (list, tuple)) else (str(val), "")
+    s_str = str(s_id).strip()
+    if s_str in sensor_map:
+        val = sensor_map[s_str]
+        return tuple(val) if isinstance(val, (list, tuple)) else (str(val), "")
+    if s_str.isdigit():
+        s_int = int(s_str)
+        if s_int in sensor_map:
+            val = sensor_map[s_int]
+            return tuple(val) if isinstance(val, (list, tuple)) else (str(val), "")
+    return None
+
+
+DEFAULT_WEATHER_FRESHNESS_TOLERANCE = timedelta(hours=2)
+
+
+def is_contemporaneous(
+    observation_time: Optional[datetime],
+    reference_time: Optional[datetime] = None,
+    tolerance: timedelta = DEFAULT_WEATHER_FRESHNESS_TOLERANCE,
+) -> bool:
+    """Check if an observation timestamp is contemporaneous with current conditions.
+
+    Returns True if observation_time is within the freshness tolerance window relative
+    to reference_time (defaults to current UTC time).
+    Prevents attaching current weather to historical observations.
+    """
+    if not observation_time or not isinstance(observation_time, datetime):
+        return False
+
+    ref = reference_time or datetime.now(timezone.utc).replace(tzinfo=None)
+    obs_naive = observation_time.replace(tzinfo=None) if observation_time.tzinfo else observation_time
+    ref_naive = ref.replace(tzinfo=None) if ref.tzinfo else ref
+
+    diff = ref_naive - obs_naive
+    # Allow small clock drift into the future (up to 15 minutes), and up to tolerance into the past
+    return -timedelta(minutes=15) <= diff <= tolerance
+
+
 class DataProcessor:
     """Stateless utility class to parse, clean, and validate telemetry updates."""
 
@@ -262,14 +364,18 @@ class DataProcessor:
         """Map OpenAQ sensor IDs to their respective parameter names and units."""
         sensor_map = {}
         for sensor in (raw_loc.get("sensors") or []):
-            if not sensor:
+            if not sensor or not isinstance(sensor, dict):
                 continue
             s_id = sensor.get("id")
             param = sensor.get("parameter", {}) or {}
-            param_name = param.get("name")
-            unit = param.get("units") or ""
-            if s_id and param_name:
-                sensor_map[s_id] = (param_name.lower(), unit.lower())
+            param_name = param.get("name") if isinstance(param, dict) else str(param) if param else None
+            unit = param.get("units") or "" if isinstance(param, dict) else ""
+            if s_id is not None and param_name:
+                try:
+                    s_int = int(s_id)
+                    sensor_map[s_int] = (str(param_name).lower(), str(unit).lower())
+                except (ValueError, TypeError):
+                    sensor_map[s_id] = (str(param_name).lower(), str(unit).lower())
         return sensor_map
 
     @staticmethod
@@ -291,12 +397,15 @@ class DataProcessor:
             if val is None:
                 continue
 
-            # Extract parameter info
-            param_info = sensor_map.get(s_id, "") if s_id else ""
+            # Extract parameter info with normalized lookup (supports int, str, and stripped keys)
+            param_info = lookup_sensor_mapping(sensor_map, s_id)
             if isinstance(param_info, tuple):
                 param_name, unit = param_info
-            else:
+            elif isinstance(param_info, str):
                 param_name = param_info
+                unit = ""
+            else:
+                param_name = None
                 unit = ""
                 
             if not param_name:

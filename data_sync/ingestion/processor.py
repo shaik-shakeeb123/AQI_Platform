@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timezone, timedelta
+from typing import Any, Tuple, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -15,7 +15,9 @@ from data_sync.ingestion.metrics import IngestionMetrics
 from data_sync.ingestion.models import IngestionLocation
 from data_sync.data_processor import (
     DataProcessor, calculate_overall_aqi,
-    extract_city_from_name, extract_measurement_datetime
+    extract_city_from_name, extract_measurement_datetime,
+    parse_and_validate_sensors_json, merge_sensor_maps, lookup_sensor_mapping,
+    DEFAULT_WEATHER_FRESHNESS_TOLERANCE, is_contemporaneous
 )
 from database.models.aqi_data import AQIData
 from database.schemas.aqi_data import AQIDataValidate
@@ -33,32 +35,44 @@ class IngestionProcessor:
         metrics: IngestionMetrics,
         geocoder: NominatimGeocoderClient,
         weather_client: OpenMeteoWeatherClient,
+        weather_freshness_tolerance: timedelta = DEFAULT_WEATHER_FRESHNESS_TOLERANCE,
     ) -> None:
         self.db = db
         self.metrics = metrics
         self.geocoder = geocoder
         self.weather_client = weather_client
+        self.weather_freshness_tolerance = weather_freshness_tolerance
 
     async def resolve_city_for_location(self, loc: IngestionLocation) -> str | None:
-        """Resolve city using regex parser, then Nominatim, and cache it."""
+        """Resolve city using regex parser, then Nominatim, and cache it.
+        
+        Guarantees that a geocoder network timeout or failure does not crash the
+        worker or discard otherwise valid pollutant observations.
+        """
         if loc.city:
             return loc.city
             
-        # Try local parser
+        # Try local parser first
         parsed = extract_city_from_name(loc.location_name)
-        if parsed:
+        if parsed and parsed.lower() != "unknown":
             loc.city = parsed
             loc.city_resolution_source = "LOCAL_PARSER"
             return parsed
             
-        # Fallback to Nominatim
+        # Fallback to Nominatim with graceful error isolation
         if loc.latitude is not None and loc.longitude is not None:
-            self.metrics.nominatim_requests += 1
-            city = await self.geocoder.reverse_geocode_city(loc.latitude, loc.longitude)
-            if city:
-                loc.city = city
-                loc.city_resolution_source = "NOMINATIM"
-                return city
+            try:
+                self.metrics.nominatim_requests += 1
+                city = await self.geocoder.reverse_geocode_city(loc.latitude, loc.longitude)
+                if city:
+                    loc.city = city
+                    loc.city_resolution_source = "NOMINATIM"
+                    return city
+            except Exception as e:
+                logger.warning(
+                    "Reverse geocoding failed for location %d (%s) at (%.4f, %.4f): %s. Falling back to Unknown.",
+                    loc.provider_location_id, loc.location_name, loc.latitude, loc.longitude, e
+                )
                 
         return None
 
@@ -89,18 +103,12 @@ class IngestionProcessor:
             self.metrics.duplicates_skipped += 1
             return [], None
 
-        # Build sensor map from cached sensors_json or raw measurements
-        sensors_mock = {}
-        if loc.sensors_json:
-            try:
-                cached = json.loads(loc.sensors_json)
-                if isinstance(cached, dict):
-                    sensors_mock.update({
-                        int(k) if str(k).isdigit() else k: tuple(v) if isinstance(v, list) else (str(v), "")
-                        for k, v in cached.items()
-                    })
-            except Exception:
-                pass
+        # Build sensor map from cached sensors_json
+        sensors_mock = parse_and_validate_sensors_json(loc.sensors_json)
+
+        # Incorporate both str and int keys to guarantee lookup compatibility
+        int_keys = {int(k): v for k, v in sensors_mock.items() if k.isdigit()}
+        sensors_mock.update(int_keys)
 
         for m in raw_measurements:
             param_obj = m.get("parameter")
@@ -115,8 +123,19 @@ class IngestionProcessor:
                 param_name = str(m.get("pollutant"))
 
             sensor_id = m.get("sensorsId") or m.get("sensorId") or m.get("id")
-            if sensor_id and param_name:
-                sensors_mock[sensor_id] = (param_name.lower(), unit)
+            if sensor_id is not None and param_name:
+                s_key = str(sensor_id).strip()
+                p_name_lower = param_name.strip().lower()
+                unit_str = str(unit).strip()
+                sensors_mock[s_key] = (p_name_lower, unit_str)
+                if s_key.isdigit():
+                    sensors_mock[int(s_key)] = (p_name_lower, unit_str)
+
+        # If loc did not have sensors_json, but we discovered sensors in raw_measurements, cache them
+        if not loc.sensors_json and sensors_mock:
+            loc.sensors_json = json.dumps({
+                str(k): list(v) for k, v in sensors_mock.items() if isinstance(k, str)
+            })
 
         try:
             grouped_records = DataProcessor.process_measurements(raw_measurements, sensors_mock)
@@ -124,11 +143,10 @@ class IngestionProcessor:
             self.metrics.records_rejected += 1
             return [], None
 
-        # Resolve city once
+        # Resolve city once (with graceful fallback on geocoding error)
         city = await self.resolve_city_for_location(loc)
 
         # We will track if at least one insert succeeds to mark the station as successfully ingested
-        any_success = False
         latest_stored_time = loc.last_successful_ingestion_at
         records_to_insert = []
 
@@ -138,19 +156,25 @@ class IngestionProcessor:
                 self.metrics.duplicates_skipped += 1
                 continue
                 
-            # Fetch weather enrichment (only if we don't already have it cached, but for simplicity fetch for latest or all)
+            # Fetch weather enrichment only for contemporaneous observations.
+            # Never attach current real-time weather to historical observations.
             weather_data = {
                 "wind_speed": None, "wind_direction": None, "precipitation": None, "pressure": None,
                 "temperature": processed_pollutants.get("temperature"),
                 "humidity": processed_pollutants.get("humidity")
             }
-            if loc.latitude and loc.longitude:
+            if loc.latitude and loc.longitude and is_contemporaneous(processor_time, tolerance=self.weather_freshness_tolerance):
                 try:
                     self.metrics.openmeteo_requests += 1
                     weather_res = await self.weather_client.fetch_current_weather(loc.latitude, loc.longitude)
                     weather_data = DataProcessor.merge_weather(processed_pollutants, weather_res)
                 except Exception as e:
                     logger.warning("Weather fetch failed for %s: %s", loc.location_name, str(e))
+            elif loc.latitude and loc.longitude:
+                logger.info(
+                    "Skipping current weather enrichment for non-contemporaneous observation (%s) at %s.",
+                    processor_time.isoformat() if processor_time else "None", loc.location_name
+                )
 
             # Calculate AQI
             aqi_val, aqi_cat, dom_pol = calculate_overall_aqi(

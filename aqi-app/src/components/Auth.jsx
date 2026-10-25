@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 import "./Auth.css";
 
-const GOOGLE_CLIENT_ID = "603313906383-qot8787nf610njma9pv1uq914icua4ec.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID;
 
 function Auth() {
   const { login, register, googleLogin } = useAuth();
@@ -36,6 +36,11 @@ function Auth() {
   ];
 
   const handleGoogleCredentialResponse = useCallback(async (response) => {
+    if (!GOOGLE_CLIENT_ID) {
+      setMessage("Google Sign-In is unavailable (Client ID not configured).");
+      setMessageType("error");
+      return;
+    }
     try {
       setLoading(true);
       setMessage("");
@@ -53,6 +58,11 @@ function Auth() {
 
   // Dynamic injection of Google Identity Services SDK
   useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) {
+      console.warn("Google Sign-In is disabled: REACT_APP_GOOGLE_CLIENT_ID is not configured.");
+      return;
+    }
+
     const script = document.createElement("script");
     script.src = "https://accounts.google.com/gsi/client";
     script.async = true;
@@ -73,7 +83,9 @@ function Auth() {
     };
 
     return () => {
-      document.body.removeChild(script);
+      if (document.body.contains(script)) {
+        document.body.removeChild(script);
+      }
     };
   }, [handleGoogleCredentialResponse]);
 
@@ -352,6 +364,12 @@ function Auth() {
             <button
               type="button"
               className="google-custom-btn"
+              onClick={() => {
+                if (!GOOGLE_CLIENT_ID) {
+                  setMessage("Google Sign-In is unavailable (Client ID not configured).");
+                  setMessageType("error");
+                }
+              }}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" className="google-icon">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>

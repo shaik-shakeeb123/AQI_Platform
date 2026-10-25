@@ -34,16 +34,16 @@ except Exception:
 configure_logging()
 logger = get_logger("scheduler")
 
-async def run_ingestion_job() -> str:
-    """Run incremental AQI ingestion."""
+async def run_ingestion_job(dry_run: bool = False, limit: int | None = None) -> str:
+    """Run incremental AQI ingestion with optional dry-run and batch bounds."""
     db = SessionLocal()
     try:
-        logger.info("Starting ingestion run via Coordinator...")
+        logger.info("Starting ingestion run via Coordinator (dry_run=%s, limit=%s)...", dry_run, limit)
         from data_sync.ingestion.coordinator import IngestionCoordinator
-        coordinator = IngestionCoordinator(db=db)
+        coordinator = IngestionCoordinator(db=db, dry_run=dry_run, batch_limit=limit)
         status = await coordinator.execute()
-        if status == "SUCCESS":
-            logger.info("Ingestion completed successfully.")
+        if status in ("SUCCESS", "DRY_RUN"):
+            logger.info("Ingestion completed successfully (status: %s).", status)
         elif status == "PARTIAL":
             logger.warning("Ingestion completed with partial failures.")
         elif str(status).startswith("SKIPPED"):

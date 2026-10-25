@@ -70,7 +70,10 @@ class OpenAQAdapter:
         }
         return await self._make_governed_request("/locations", params)
 
+    async def get_location(self, location_id: int) -> dict:
+        """Fetch details for a specific location by ID (including sensor definitions)."""
+        return await self._make_governed_request(f"/locations/{location_id}")
+
     async def get_latest_measurements(self, location_id: int) -> dict:
         """Fetch latest measurements for a location."""
         return await self._make_governed_request(f"/locations/{location_id}/latest")
-
