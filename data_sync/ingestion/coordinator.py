@@ -376,8 +376,8 @@ class IngestionCoordinator:
                     loc.last_synced_at = now
                     self.metrics.locations_successful += 1
 
-                elif status in ("EMPTY", "PROCESSING_ERROR"):
-                    # HTTP request succeeded (either empty data or processing/validation failure).
+                elif status in ("EMPTY", "DUPLICATE", "REJECTED", "PROCESSING_ERROR"):
+                    # HTTP request succeeded (either empty data, duplicate, rejected pollutants, or error).
                     # Advance last_synced_at to prevent immediate tight-loop hammering,
                     # but DO NOT advance last_successful_ingestion_at.
                     loc.last_synced_at = now
@@ -459,14 +459,30 @@ class IngestionCoordinator:
                     await db_queue.put((loc, "EMPTY", [], None))
                 else:
                     try:
-                        records_to_insert, new_time = await self.processor.process_and_store(loc, results)
-                        if not records_to_insert and not new_time:
-                            # Results existed but produced no valid records (malformed/invalid data)
+                        result = await self.processor.process_and_store(loc, results)
+                        records_to_insert, new_time = result
+                        outcome = getattr(result, "status", None)
+
+                        if outcome == "SUCCESS" or (outcome is None and records_to_insert):
+                            await db_queue.put((loc, "SUCCESS", records_to_insert, new_time))
+                        elif outcome == "DUPLICATE":
+                            # All observations already ingested up to checkpoint. Normal skip, not an error.
+                            await db_queue.put((loc, "DUPLICATE", [], None))
+                        elif outcome == "REJECTED":
+                            # Observations lacked criteria pollutants or valid timestamps. Normal filtering, not an error.
+                            await db_queue.put((loc, "REJECTED", [], None))
+                        elif outcome == "EMPTY":
+                            self.metrics.locations_empty += 1
+                            await db_queue.put((loc, "EMPTY", [], None))
+                        else:
+                            # Genuine malformed payload (not duplicate, not standard rejected, but produced 0 records)
                             has_failures = True
                             self.metrics.locations_processing_errors += 1
+                            logger.error(
+                                "[%s] Malformed payload for location %d: %d raw measurements produced 0 valid records.",
+                                self.run_id, loc.provider_location_id, len(results)
+                            )
                             await db_queue.put((loc, "PROCESSING_ERROR", [], None))
-                        else:
-                            await db_queue.put((loc, "SUCCESS", records_to_insert, new_time))
                     except Exception as proc_err:
                         has_failures = True
                         self.metrics.locations_processing_errors += 1

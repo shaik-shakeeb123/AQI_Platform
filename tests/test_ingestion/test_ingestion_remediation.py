@@ -25,7 +25,7 @@ import database.models.aqi_data    # noqa: F401
 from data_sync.data_processor import extract_measurement_datetime, DataProcessor
 from data_sync.ingestion.models import IngestionLocation, IngestionRun
 from data_sync.ingestion.planner import IngestionPlanner
-from data_sync.ingestion.processor import IngestionProcessor
+from data_sync.ingestion.processor import IngestionProcessor, ProcessingResult
 from data_sync.ingestion.metrics import IngestionMetrics
 from data_sync.ingestion.coordinator import IngestionCoordinator
 
@@ -1599,4 +1599,391 @@ async def test_run_once_exit_code_dry_run():
         assert code == 0
         mock_job.assert_awaited_once_with(dry_run=True, limit=5)
 
+
+# ============================================================================
+# 10. CONTROL-FLOW & OUTCOME CLASSIFICATION REGRESSION TESTS
+# ============================================================================
+
+def test_processing_result_tuple_contract():
+    """Regression Test 10A: ProcessingResult satisfies tuple interface while providing explicit status."""
+    from database.models.aqi_data import AQIData
+
+    rec = AQIData(location_name="TestLoc", city="Delhi", aqi=50)
+    ts = datetime(2026, 4, 1, 12, 0, 0)
+    res = ProcessingResult([rec], ts, status="SUCCESS")
+
+    # 1. Tuple unpacking works seamlessly
+    records, latest_time = res
+    assert records == [rec]
+    assert latest_time == ts
+
+    # 2. Length and indexing
+    assert len(res) == 2
+    assert res[0] == [rec]
+    assert res[1] == ts
+    assert isinstance(res, tuple)
+
+    # 3. Explicit outcome attributes
+    assert res.status == "SUCCESS"
+    assert res.records == [rec]
+    assert res.latest_time == ts
+
+
+@pytest.mark.asyncio
+async def test_coordinator_duplicate_station_not_processing_error(in_memory_db):
+    """Regression Test 10B: Duplicate measurements do not increment processing errors and yield SUCCESS status."""
+    checkpoint_time = datetime(2026, 4, 1, 12, 0, 0)
+    loc = IngestionLocation(
+        provider="OpenAQ", provider_location_id=9001, location_name="DupStation",
+        is_active=True, last_synced_at=datetime(2026, 4, 1, 11, 0, 0),
+        last_successful_ingestion_at=checkpoint_time,
+        sensors_json=json.dumps({"1": ["pm25", "µg/m³"]})
+    )
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    # Measurement timestamp is equal to or older than checkpoint
+    async def mock_latest(provider_id):
+        return {
+            "results": [
+                {"sensorsId": 1, "value": 35.0, "datetime": {"utc": "2026-04-01T12:00:00Z"}}
+            ]
+        }
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "SUCCESS", f"Expected SUCCESS but got {status}"
+    assert coord.metrics.duplicates_skipped == 1
+    assert coord.metrics.locations_processing_errors == 0
+    assert coord.metrics.locations_http_errors == 0
+    assert coord.metrics.records_stored == 0
+
+    # Verify station checkpoint is NOT modified, but last_synced_at is advanced
+    in_memory_db.refresh(loc)
+    assert loc.last_successful_ingestion_at == checkpoint_time
+    assert loc.last_synced_at > datetime(2026, 4, 1, 11, 0, 0)
+
+    # Verify IngestionRun record
+    db_run = in_memory_db.scalar(select(IngestionRun).where(IngestionRun.run_id == coord.run_id))
+    assert db_run is not None
+    assert db_run.status == "SUCCESS"
+    assert db_run.duplicates_skipped == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_weather_only_station_not_processing_error(in_memory_db):
+    """Regression Test 10C: Weather-only station (no criteria pollutants) is marked REJECTED, not processing error."""
+    checkpoint_time = datetime(2026, 4, 1, 10, 0, 0)
+    loc = IngestionLocation(
+        provider="OpenAQ", provider_location_id=9002, location_name="WeatherOnlyStation",
+        is_active=True, last_synced_at=datetime(2026, 4, 1, 9, 0, 0),
+        last_successful_ingestion_at=checkpoint_time,
+        sensors_json=json.dumps({"99": ["temperature", "°C"]})
+    )
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    # Measurement has only temperature
+    async def mock_latest(provider_id):
+        return {
+            "results": [
+                {"sensorsId": 99, "value": 28.5, "datetime": {"utc": "2026-04-01T12:00:00Z"}}
+            ]
+        }
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "SUCCESS", f"Expected SUCCESS but got {status}"
+    assert coord.metrics.records_rejected == 1
+    assert coord.metrics.locations_processing_errors == 0
+    assert coord.metrics.locations_http_errors == 0
+    assert coord.metrics.records_stored == 0
+
+    # Verify station checkpoint is NOT modified, but last_synced_at is advanced
+    in_memory_db.refresh(loc)
+    assert loc.last_successful_ingestion_at == checkpoint_time
+    assert loc.last_synced_at > datetime(2026, 4, 1, 9, 0, 0)
+
+    # Verify IngestionRun record
+    db_run = in_memory_db.scalar(select(IngestionRun).where(IngestionRun.run_id == coord.run_id))
+    assert db_run is not None
+    assert db_run.status == "SUCCESS"
+    assert db_run.records_rejected == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_malformed_payload_is_processing_error(in_memory_db):
+    """Regression Test 10D: Genuine malformed payload returning MALFORMED increments processing errors and yields PARTIAL."""
+    loc = IngestionLocation(
+        provider="OpenAQ", provider_location_id=9003, location_name="MalformedStation",
+        is_active=True, last_synced_at=datetime(2026, 4, 1, 9, 0, 0),
+        sensors_json=json.dumps({"1": ["pm25", "µg/m³"]})
+    )
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    # Mock processor to return MALFORMED status
+    coord.processor.process_and_store = AsyncMock(
+        return_value=ProcessingResult([], None, status="MALFORMED")
+    )
+
+    async def mock_latest(provider_id):
+        return {"results": [{"corrupted": True}]}
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "PARTIAL", f"Expected PARTIAL but got {status}"
+    assert coord.metrics.locations_processing_errors == 1
+    assert coord.metrics.records_stored == 0
+
+    # IngestionRun record must be marked PARTIAL
+    db_run = in_memory_db.scalar(select(IngestionRun).where(IngestionRun.run_id == coord.run_id))
+    assert db_run is not None
+    assert db_run.status == "PARTIAL"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_processing_exception_is_failure(in_memory_db):
+    """Regression Test 10E: Unexpected processor exception increments processing errors and yields PARTIAL."""
+    loc = IngestionLocation(
+        provider="OpenAQ", provider_location_id=9004, location_name="CrashStation",
+        is_active=True, last_synced_at=datetime(2026, 4, 1, 9, 0, 0),
+        sensors_json=json.dumps({"1": ["pm25", "µg/m³"]})
+    )
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    # Processor raises unexpected error
+    coord.processor.process_and_store = AsyncMock(
+        side_effect=RuntimeError("Unrecoverable parsing engine failure")
+    )
+
+    async def mock_latest(provider_id):
+        return {"results": [{"sensorsId": 1, "value": 42.0}]}
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "PARTIAL", f"Expected PARTIAL but got {status}"
+    assert coord.metrics.locations_processing_errors == 1
+
+    db_run = in_memory_db.scalar(select(IngestionRun).where(IngestionRun.run_id == coord.run_id))
+    assert db_run is not None
+    assert db_run.status == "PARTIAL"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_production_scenario_zero_stored_all_duplicates_and_rejected(in_memory_db):
+    """Regression Test 10F: Exact reproduction of production failure run 13c6dc36.
+    
+    Setup:
+    - 11 locations examined & attempted
+    - 4 empty responses
+    - 5 duplicate locations (measurements <= checkpoint)
+    - 2 weather-only stations (no criteria pollutants)
+    
+    Prior behavior:
+    - 7 processing errors (proc_err=7), status=PARTIAL/FAILED, run_once exits with code 2.
+    
+    Fixed behavior:
+    - 0 processing errors (proc_err=0), status=SUCCESS, run_once exits with code 0.
+    """
+    locations = []
+    # 4 Empty locations
+    for i in range(1, 5):
+        loc = IngestionLocation(
+            provider="OpenAQ", provider_location_id=1000 + i, location_name=f"EmptyLoc_{i}",
+            is_active=True, last_synced_at=datetime(2026, 4, 1, 8, 0, 0),
+            sensors_json=json.dumps({"1": ["pm25", "µg/m³"]})
+        )
+        locations.append(loc)
+        in_memory_db.add(loc)
+
+    # 5 Duplicate locations
+    dup_time = datetime(2026, 4, 1, 12, 0, 0)
+    for i in range(5, 10):
+        loc = IngestionLocation(
+            provider="OpenAQ", provider_location_id=1000 + i, location_name=f"DupLoc_{i}",
+            is_active=True, last_synced_at=datetime(2026, 4, 1, 11, 0, 0),
+            last_successful_ingestion_at=dup_time,
+            sensors_json=json.dumps({"1": ["pm25", "µg/m³"]})
+        )
+        locations.append(loc)
+        in_memory_db.add(loc)
+
+    # 2 Weather-only locations
+    for i in range(10, 12):
+        loc = IngestionLocation(
+            provider="OpenAQ", provider_location_id=1000 + i, location_name=f"WeatherLoc_{i}",
+            is_active=True, last_synced_at=datetime(2026, 4, 1, 10, 0, 0),
+            last_successful_ingestion_at=datetime(2026, 4, 1, 9, 0, 0),
+            sensors_json=json.dumps({"99": ["temperature", "°C"]})
+        )
+        locations.append(loc)
+        in_memory_db.add(loc)
+
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=locations)
+
+    async def mock_latest(provider_id):
+        if provider_id <= 1004:
+            # Empty response
+            return {"results": []}
+        elif provider_id <= 1009:
+            # Duplicate observation (timestamp == checkpoint)
+            return {
+                "results": [
+                    {"sensorsId": 1, "value": 45.0, "datetime": {"utc": "2026-04-01T12:00:00Z"}}
+                ]
+            }
+        else:
+            # Weather-only observation
+            return {
+                "results": [
+                    {"sensorsId": 99, "value": 31.0, "datetime": {"utc": "2026-04-01T12:00:00Z"}}
+                ]
+            }
+
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "SUCCESS", f"Expected SUCCESS for benign empty/duplicate/weather run, got {status}"
+    assert coord.metrics.locations_examined == 11
+    assert coord.metrics.locations_attempted == 11
+    assert coord.metrics.locations_empty == 4
+    assert coord.metrics.duplicates_skipped == 5
+    assert coord.metrics.records_rejected == 2
+    assert coord.metrics.locations_processing_errors == 0
+    assert coord.metrics.locations_http_errors == 0
+    assert coord.metrics.records_stored == 0
+
+    # IngestionRun record must be SUCCESS
+    db_run = in_memory_db.scalar(select(IngestionRun).where(IngestionRun.run_id == coord.run_id))
+    assert db_run is not None
+    assert db_run.status == "SUCCESS"
+    assert db_run.records_stored == 0
+
+    # Verify all locations had their last_synced_at advanced
+    for loc in locations:
+        in_memory_db.refresh(loc)
+        assert loc.last_synced_at > datetime(2026, 4, 1, 11, 0, 0)
+        # Verify checkpoints were preserved
+        if loc.location_name.startswith("DupLoc"):
+            assert loc.last_successful_ingestion_at == dup_time
+        elif loc.location_name.startswith("WeatherLoc"):
+            assert loc.last_successful_ingestion_at == datetime(2026, 4, 1, 9, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_valid_records_persisted_and_checkpoint_advanced(in_memory_db):
+    """Regression Test 10G: Valid new measurements persist normally and advance last_successful_ingestion_at."""
+    from database.models.aqi_data import AQIData
+
+    old_checkpoint = datetime(2026, 4, 1, 10, 0, 0)
+    new_meas_time = datetime(2026, 4, 1, 12, 0, 0)
+
+    loc = IngestionLocation(
+        provider="OpenAQ", provider_location_id=9005, location_name="ValidStation",
+        is_active=True, last_synced_at=datetime(2026, 4, 1, 10, 0, 0),
+        last_successful_ingestion_at=old_checkpoint,
+        sensors_json=json.dumps({"1": ["pm25", "µg/m³"]})
+    )
+    in_memory_db.add(loc)
+    in_memory_db.commit()
+
+    coord = IngestionCoordinator(db=in_memory_db, dry_run=False)
+    coord._acquire_lock = AsyncMock(return_value=True)
+    coord._should_run_metadata_sync = AsyncMock(return_value=False)
+    coord._check_db_backed_hourly_budget = AsyncMock(return_value=True)
+    coord.planner.plan_measurement_ingestion = MagicMock(return_value=[loc])
+
+    async def mock_latest(provider_id):
+        return {
+            "results": [
+                {"sensorsId": 1, "value": 55.0, "datetime": {"utc": "2026-04-01T12:00:00Z"}}
+            ]
+        }
+    coord.provider_adapter.get_latest_measurements = AsyncMock(side_effect=mock_latest)
+
+    status = await coord.execute()
+    assert status == "SUCCESS"
+    assert coord.metrics.records_stored == 1
+    assert coord.metrics.locations_successful == 1
+    assert coord.metrics.locations_processing_errors == 0
+    assert coord.metrics.locations_http_errors == 0
+
+    # Verify database persistence
+    records = in_memory_db.scalars(select(AQIData).where(AQIData.location_name == "ValidStation")).all()
+    assert len(records) == 1
+    assert records[0].pm25 == 55.0
+
+    # Verify station checkpoint advanced
+    in_memory_db.refresh(loc)
+    assert loc.last_successful_ingestion_at == new_meas_time
+    assert loc.last_synced_at >= new_meas_time
+
+    # Verify IngestionRun record
+    db_run = in_memory_db.scalar(select(IngestionRun).where(IngestionRun.run_id == coord.run_id))
+    assert db_run is not None
+    assert db_run.status == "SUCCESS"
+    assert db_run.records_stored == 1
+
+
+@pytest.mark.asyncio
+async def test_run_once_exit_code_status_mapping():
+    """Regression Test 10H: Verify run_once.py main returns 0 for SUCCESS/DRY_RUN/SKIPPED, 2 for PARTIAL, 1 for FAILED."""
+    from data_sync.run_once import main
+
+    with patch("data_sync.run_once.run_ingestion_job", new_callable=AsyncMock) as mock_job:
+        # SUCCESS -> 0
+        mock_job.return_value = "SUCCESS"
+        assert await main([]) == 0
+
+        # DRY_RUN -> 0
+        mock_job.return_value = "DRY_RUN"
+        assert await main([]) == 0
+
+        # SKIPPED_BUDGET -> 0
+        mock_job.return_value = "SKIPPED_BUDGET"
+        assert await main([]) == 0
+
+        # SKIPPED_LOCKED -> 0
+        mock_job.return_value = "SKIPPED_LOCKED"
+        assert await main([]) == 0
+
+        # PARTIAL -> 2
+        mock_job.return_value = "PARTIAL"
+        assert await main([]) == 2
+
+        # FAILED -> 1
+        mock_job.return_value = "FAILED"
+        assert await main([]) == 1
 

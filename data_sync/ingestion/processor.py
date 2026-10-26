@@ -26,6 +26,24 @@ from data_sync.clients.openmeteo_weather_client import OpenMeteoWeatherClient
 
 logger = get_logger(__name__)
 
+
+class ProcessingResult(tuple):
+    """Result tuple of (records_to_insert, latest_timestamp) with explicit outcome status.
+
+    Inherits from tuple for full backward-compatibility with 2-element tuple unpacking:
+        records, latest_time = result
+    while providing explicit outcome metadata:
+        result.status in ("SUCCESS", "DUPLICATE", "REJECTED", "EMPTY", "MALFORMED")
+    """
+
+    def __new__(cls, records: list[AQIData], latest_time: Optional[datetime], status: str):
+        instance = super().__new__(cls, (records, latest_time))
+        instance.records = records
+        instance.latest_time = latest_time
+        instance.status = status
+        return instance
+
+
 class IngestionProcessor:
     """Processes raw measurements, enriches them, and idempotently stores them."""
 
@@ -80,11 +98,11 @@ class IngestionProcessor:
         self, 
         loc: IngestionLocation, 
         raw_measurements: list[dict[str, Any]]
-    ) -> Tuple[list[AQIData], Optional[datetime]]:
+    ) -> ProcessingResult:
         """Process a location's measurements and return records to store."""
         if not raw_measurements:
             # Empty response for this station; no records to validate or reject
-            return [], None
+            return ProcessingResult([], None, status="EMPTY")
             
         # Extract the exact measurement timestamp from the raw payload safely
         latest_meas_time = None
@@ -96,12 +114,12 @@ class IngestionProcessor:
                     
         if not latest_meas_time:
             self.metrics.records_rejected += 1
-            return [], None
+            return ProcessingResult([], None, status="REJECTED")
 
         # If data is not newer than what we have, skip
         if loc.last_successful_ingestion_at and latest_meas_time <= loc.last_successful_ingestion_at:
             self.metrics.duplicates_skipped += 1
-            return [], None
+            return ProcessingResult([], None, status="DUPLICATE")
 
         # Build sensor map from cached sensors_json
         sensors_mock = parse_and_validate_sensors_json(loc.sensors_json)
@@ -141,7 +159,7 @@ class IngestionProcessor:
             grouped_records = DataProcessor.process_measurements(raw_measurements, sensors_mock)
         except ValueError:
             self.metrics.records_rejected += 1
-            return [], None
+            return ProcessingResult([], None, status="REJECTED")
 
         # Resolve city once (with graceful fallback on geocoding error)
         city = await self.resolve_city_for_location(loc)
@@ -149,11 +167,14 @@ class IngestionProcessor:
         # We will track if at least one insert succeeds to mark the station as successfully ingested
         latest_stored_time = loc.last_successful_ingestion_at
         records_to_insert = []
+        duplicates_in_loop = 0
+        rejected_in_loop = 0
 
         for processed_pollutants, processor_time in grouped_records:
             # If data is not newer than what we have, skip
             if loc.last_successful_ingestion_at and processor_time <= loc.last_successful_ingestion_at:
                 self.metrics.duplicates_skipped += 1
+                duplicates_in_loop += 1
                 continue
                 
             # Fetch weather enrichment only for contemporaneous observations.
@@ -213,9 +234,15 @@ class IngestionProcessor:
             except Exception as e:
                 logger.warning("Validation failed for %s: %s", loc.location_name, str(e))
                 self.metrics.records_rejected += 1
+                rejected_in_loop += 1
                 continue
                 
         if not records_to_insert:
-            return [], None
+            if duplicates_in_loop > 0:
+                return ProcessingResult([], None, status="DUPLICATE")
+            elif rejected_in_loop > 0:
+                return ProcessingResult([], None, status="REJECTED")
+            else:
+                return ProcessingResult([], None, status="MALFORMED")
             
-        return records_to_insert, latest_stored_time
+        return ProcessingResult(records_to_insert, latest_stored_time, status="SUCCESS")
