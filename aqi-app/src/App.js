@@ -1131,7 +1131,6 @@ aqi!==null &&
 )
 
 }
-}
 <Suspense fallback={<div className="loading-spinner" style={{margin: 'auto', padding: '50px'}}>Loading Page...</div>}>
 {
 
