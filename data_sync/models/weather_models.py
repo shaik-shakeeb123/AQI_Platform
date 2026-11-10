@@ -101,6 +101,7 @@ class NormalizedCurrentWeather:
     sunset: Optional[str] = None
     sunrise_timestamp: Optional[int] = None
     sunset_timestamp: Optional[int] = None
+    timezone: Optional[str] = None
     recorded_at: Optional[datetime] = None
     provider: str = "Unknown"
     source: str = "LIVE"
@@ -129,6 +130,7 @@ class NormalizedCurrentWeather:
                 "sunrise": [self.sunrise] if self.sunrise else [],
                 "sunset": [self.sunset] if self.sunset else [],
             },
+            "timezone": self.timezone,
             "provider": self.provider,
             "source": self.source,
             "attribution": self.attribution,

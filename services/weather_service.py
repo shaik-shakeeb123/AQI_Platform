@@ -14,6 +14,7 @@ from services.weather_provider_manager import (
     WeatherProviderManager,
     clear_shared_weather_cache,
 )
+from services.timezone_service import resolve_iana_timezone
 
 logger = get_logger(__name__)
 
@@ -119,14 +120,21 @@ class WeatherService:
             # 3. Retrieve weather via Multi-Provider Manager
             weather = await self.provider_manager.get_current_weather(lat, lon)
 
-            # 4. Construct WeatherResponse
+            # 4. Resolve authoritative IANA timezone
+            resolved_tz = (
+                weather.timezone
+                if (weather.timezone and weather.timezone != "UTC")
+                else resolve_iana_timezone(lat, lon, country_code)
+            )
+
+            # 5. Construct WeatherResponse
             response = WeatherResponse(
                 city=city,
                 country=country,
                 country_code=country_code,
                 latitude=lat,
                 longitude=lon,
-                timezone=weather.raw_data.get("timezone", "UTC"),
+                timezone=resolved_tz,
                 temperature=weather.temperature,
                 feels_like=weather.feels_like,
                 humidity=weather.humidity,

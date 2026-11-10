@@ -19,6 +19,7 @@ from data_sync.models.weather_models import (
     calculate_apparent_temperature,
     calculate_solar_times,
 )
+from services.timezone_service import resolve_iana_timezone
 
 logger = get_logger(__name__)
 
@@ -427,6 +428,8 @@ class MetNorwayClient(BaseWeatherProvider):
             symbol_code, is_daytime=is_daytime
         )
 
+        iana_tz = resolve_iana_timezone(lat, lon)
+
         return NormalizedCurrentWeather(
             temperature=temp_c,
             feels_like=feels_like,
@@ -444,6 +447,7 @@ class MetNorwayClient(BaseWeatherProvider):
             sunset=sunset_iso,
             sunrise_timestamp=sunrise_ts,
             sunset_timestamp=sunset_ts,
+            timezone=iana_tz,
             recorded_at=recorded_at,
             provider=self.PROVIDER_NAME,
             source="MET_NORWAY",

@@ -28,8 +28,8 @@ export const adaptWeather = (res) => {
         cooldown_remaining: res.cooldown_remaining_seconds || 0,
         sys: {
             country: res.country_code || null,
-            sunrise: res.sunrise_timestamp ?? null,
-            sunset: res.sunset_timestamp ?? null
+            sunrise: res.sunrise_timestamp ?? res.sunrise ?? null,
+            sunset: res.sunset_timestamp ?? res.sunset ?? null
         },
         weather: [
             {
@@ -48,4 +48,39 @@ export const adaptWeather = (res) => {
             deg: res.wind_direction ?? null
         }
     };
+};
+
+/**
+ * Format a UTC timestamp (epoch seconds, milliseconds, or ISO string)
+ * into a localized 12-hour clock string (e.g. "06:13 AM") strictly respecting
+ * the target city's IANA timezone.
+ */
+export const formatWeatherTime = (timestamp, timeZone) => {
+    if (!timestamp) return "--";
+
+    let date;
+    if (typeof timestamp === "number") {
+        date = timestamp < 1e11 ? new Date(timestamp * 1000) : new Date(timestamp);
+    } else {
+        date = new Date(timestamp);
+    }
+
+    if (isNaN(date.getTime())) return "--";
+
+    const validTz = (typeof timeZone === "string" && timeZone.trim()) ? timeZone.trim() : "UTC";
+    try {
+        return new Intl.DateTimeFormat("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+            timeZone: validTz
+        }).format(date);
+    } catch (e) {
+        return new Intl.DateTimeFormat("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: true,
+            timeZone: "UTC"
+        }).format(date);
+    }
 };

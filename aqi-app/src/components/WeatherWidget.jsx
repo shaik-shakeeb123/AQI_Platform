@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import "./WeatherWidget.css";
 import { getWeather, getWeatherByLocation } from "../services/backendApi";
+import { formatWeatherTime } from "../services/weatherAdapter";
 
 function WeatherWidget({
     city,
@@ -53,20 +54,7 @@ function WeatherWidget({
 
 
 
-    const formatTime = (timestamp, timeZone) => {
-        if (!timestamp) return "--";
-        
-        const options = {
-            hour: "2-digit",
-            minute: "2-digit"
-        };
-        
-        if (timeZone) {
-            options.timeZone = timeZone;
-        }
-        
-        return new Date(timestamp * 1000).toLocaleTimeString([], options);
-    };
+    const formatTime = (timestamp, timeZone) => formatWeatherTime(timestamp, timeZone);
 
 
 

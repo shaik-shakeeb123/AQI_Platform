@@ -19,6 +19,7 @@ from data_sync.models.weather_models import (
     NormalizedCurrentWeather,
     NormalizedHourlyForecast,
 )
+from services.timezone_service import resolve_iana_timezone
 
 logger = get_logger(__name__)
 
@@ -119,6 +120,7 @@ class OpenMeteoProvider(BaseWeatherProvider):
             sunset=sunset_iso,
             sunrise_timestamp=sunrise_ts,
             sunset_timestamp=sunset_ts,
+            timezone=raw_data.get("timezone") or resolve_iana_timezone(lat, lon),
             recorded_at=recorded_at,
             provider=self.PROVIDER_NAME,
             source=source,
