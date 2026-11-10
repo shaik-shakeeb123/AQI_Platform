@@ -7,7 +7,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from data_sync.clients.nominatim_client import GeocodingResult
-from services.timezone_service import resolve_iana_timezone
+from services.timezone_service import (
+    convert_utc_to_local,
+    get_zone_info,
+    is_valid_timezone,
+    resolve_iana_timezone,
+)
 from services.weather_provider_manager import (
     WeatherProviderManager,
     clear_shared_weather_cache,
@@ -202,3 +207,57 @@ async def test_weather_service_international_timezones():
     with patch("data_sync.clients.nominatim_client.NominatimGeocoderClient.geocode_address_with_details", new_callable=AsyncMock, return_value=mock_geo_ny):
         resp_ny = await service.get_weather("New York")
         assert resp_ny.timezone == "America/New_York"
+
+
+# ── 4. ZoneInfo Migration & Graceful Fallback Tests ───────────────────────────
+
+def test_no_pytz_imported_by_timezone_service():
+    """Verify that services.timezone_service strictly uses standard library zoneinfo without pytz."""
+    import sys
+    import services.timezone_service as tz_mod
+
+    # Inspect module globals and imports
+    assert not hasattr(tz_mod, "pytz"), "timezone_service must not import pytz"
+    assert "pytz" not in tz_mod.__dict__
+
+
+def test_is_valid_timezone_and_graceful_fallback():
+    """Verify is_valid_timezone and get_zone_info handle valid, invalid, and None inputs."""
+    # Valid timezones
+    assert is_valid_timezone("Asia/Kolkata") is True
+    assert is_valid_timezone("Europe/London") is True
+    assert is_valid_timezone("America/New_York") is True
+    assert is_valid_timezone("UTC") is True
+
+    # Invalid / malformed timezones
+    assert is_valid_timezone("Invalid/Nowhere") is False
+    assert is_valid_timezone("") is False
+    assert is_valid_timezone(None) is False
+
+    # get_zone_info returns correct ZoneInfo or falls back to UTC
+    assert get_zone_info("Asia/Kolkata").key == "Asia/Kolkata"
+    assert get_zone_info("Invalid/Nowhere").key == "UTC"
+    assert get_zone_info(None).key == "UTC"
+
+
+def test_convert_utc_to_local_accuracy():
+    """Verify convert_utc_to_local converts UTC instants to target local time."""
+    # Madanapalle sunrise 00:43:31 UTC -> 06:13:31 IST
+    utc_dt = datetime.fromisoformat("2026-11-10T00:43:31+00:00")
+    local_dt = convert_utc_to_local(utc_dt, "Asia/Kolkata")
+    assert local_dt.hour == 6
+    assert local_dt.minute == 13
+    assert local_dt.second == 31
+
+    # Naive datetime handling (should treat as UTC)
+    naive_dt = datetime(2026, 11, 10, 0, 43, 31)
+    local_from_naive = convert_utc_to_local(naive_dt, "Asia/Kolkata")
+    assert local_from_naive.hour == 6
+    assert local_from_naive.minute == 13
+
+    # Invalid timezone fallback to UTC
+    fallback_dt = convert_utc_to_local(utc_dt, "Invalid/Nowhere")
+    assert fallback_dt.tzinfo.key == "UTC"
+    assert fallback_dt.hour == 0
+    assert fallback_dt.minute == 43
+
