@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     OPENAQ_API_KEY: str
     OPENAQ_BASE_URL: str = "https://api.openaq.org/v3"
     OPEN_METEO_BASE_URL: str = "https://api.open-meteo.com/v1"
+    MET_NORWAY_BASE_URL: str = "https://api.met.no/weatherapi/locationforecast/2.0"
+    MET_NORWAY_USER_AGENT: str = "AQIPlatform/1.0 (https://github.com/shaikshakeeb/AQI_Platform_V01, contact@aqi-platform.com)"
+    WEATHER_PRIMARY_PROVIDER: str = "MET_NORWAY"
+    WEATHER_SECONDARY_PROVIDER: str = "OPEN_METEO"
     OSRM_BASE_URL: str = "http://router.project-osrm.org"
 
 

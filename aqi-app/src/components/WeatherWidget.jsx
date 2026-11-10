@@ -184,6 +184,18 @@ function WeatherWidget({
 
                         }
 
+                        {
+
+                            (weather.source === "MET_NORWAY" || weather.source === "OPEN_METEO") &&
+
+                            <span style={{ display: "block", fontSize: "0.72rem", opacity: 0.75, color: "#10b981", marginTop: "4px" }}>
+
+                                ● Live ({weather.provider || weather.source.replace("_", " ")})
+
+                            </span>
+
+                        }
+
                     </p>
 
                 </div>
@@ -363,6 +375,18 @@ function WeatherWidget({
                 </span>
 
             </div>
+
+            {
+
+                weather.attribution &&
+
+                <div style={{ textAlign: "center", fontSize: "0.72rem", opacity: 0.65, marginTop: "12px", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "8px" }}>
+
+                    {weather.attribution}
+
+                </div>
+
+            }
 
         </div>
 

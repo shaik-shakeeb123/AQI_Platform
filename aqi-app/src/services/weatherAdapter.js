@@ -20,6 +20,8 @@ export const adaptWeather = (res) => {
         cod: isAvailable ? 200 : 503,
         name: res.city,
         timezone: res.timezone || null,
+        provider: res.provider || null,
+        attribution: res.attribution || null,
         source: res.source || (isAvailable ? "LIVE" : "UNAVAILABLE"),
         is_available: isAvailable,
         cached_at: res.cached_at || null,

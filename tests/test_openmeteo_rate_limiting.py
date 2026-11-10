@@ -14,6 +14,7 @@ from data_sync.clients.openmeteo_weather_client import (
     get_weather_client_metrics,
 )
 from services.weather_service import clear_weather_service_cache
+from data_sync.clients.met_norway_client import clear_met_norway_state
 from api_layer.exceptions import ExternalAPIException
 
 
@@ -22,9 +23,11 @@ def reset_weather_cache_state():
     """Ensure in-memory weather cache and cooldown are reset before and after every test."""
     clear_weather_cache()
     clear_weather_service_cache()
+    clear_met_norway_state()
     yield
     clear_weather_cache()
     clear_weather_service_cache()
+    clear_met_norway_state()
 
 
 @pytest.mark.asyncio
@@ -342,6 +345,7 @@ async def test_weather_service_endpoint_returns_controlled_unavailable_during_42
     """
     from services.weather_service import WeatherService
     from data_sync.clients.nominatim_client import GeocodingResult
+    from data_sync.clients.met_norway_client import MetNorwayClient
 
     mock_geo = GeocodingResult(
         latitude=13.55,
@@ -352,7 +356,8 @@ async def test_weather_service_endpoint_returns_controlled_unavailable_during_42
 
     service = WeatherService()
 
-    # Trigger cooldown so OpenMeteoWeatherClient is in active 429 cooldown
+    # Trigger cooldown on both providers so system is in active 429 cooldown with no upstream
+    MetNorwayClient().set_cooldown(29177.5)
     set_cooldown(29177.5)
 
     with patch("data_sync.clients.nominatim_client.NominatimGeocoderClient.geocode_address_with_details", new_callable=AsyncMock, return_value=mock_geo):
@@ -396,12 +401,14 @@ async def test_weather_service_endpoint_returns_stale_cache_during_429():
     }
 
     service = WeatherService()
+    from data_sync.clients.met_norway_client import MetNorwayClient
+    MetNorwayClient().set_cooldown(3600.0)
 
-    # 1. Successful live fetch warms the cache
+    # 1. Successful live fetch warms the cache via secondary fallback
     with patch("data_sync.clients.nominatim_client.NominatimGeocoderClient.geocode_address_with_details", new_callable=AsyncMock, return_value=mock_geo), \
          patch("data_sync.clients.openmeteo_weather_client.OpenMeteoWeatherClient.fetch_current_weather", new_callable=AsyncMock, return_value=mock_weather):
         live_resp = await service.get_weather("Madanapalle")
-        assert live_resp.source == "LIVE"
+        assert live_resp.source in ("LIVE", "OPEN_METEO")
         assert live_resp.temperature == 29.0
 
     # 2. Fast forward 15 minutes (past fresh TTL 600s, within stale TTL 3600s)

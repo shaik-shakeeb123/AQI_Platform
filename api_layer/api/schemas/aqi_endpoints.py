@@ -333,6 +333,7 @@ class WeatherResponse(BaseModel):
 
     # ── Provider Metadata ────────────────────────────────────────────────
     provider: str = Field(default="Open-Meteo", description="Weather data provider")
+    attribution: str = Field(default="", description="Mandatory open-data weather attribution notice")
 
     # ── Operational / Availability Metadata ──────────────────────────────
     source: str = Field(default="LIVE", description="Weather data source: LIVE, CACHE, STALE_CACHE, or UNAVAILABLE")
