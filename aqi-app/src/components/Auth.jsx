@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 import "./Auth.css";
 
-const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || "561174262810-rd83kmklag04ql6u3u2mnko3n4v04c.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID;
 
 function Auth() {
   const { login, register, googleLogin } = useAuth();
@@ -36,6 +36,11 @@ function Auth() {
   ];
 
   const handleGoogleCredentialResponse = useCallback(async (response) => {
+    if (!GOOGLE_CLIENT_ID) {
+      setMessage("Google Sign-In is unavailable (Client ID not configured).");
+      setMessageType("error");
+      return;
+    }
     try {
       setLoading(true);
       setMessage("");
@@ -53,8 +58,20 @@ function Auth() {
 
   // Dynamic injection & initialization of Google Identity Services SDK
   useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) {
+      console.warn("Google Sign-In is disabled: REACT_APP_GOOGLE_CLIENT_ID is not configured.");
+      setMessage("Google Sign-In is unavailable (Client ID not configured).");
+      setMessageType("error");
+      return;
+    }
+
     const initGoogle = () => {
       if (window.google?.accounts?.id) {
+        console.log("[Google Auth Diagnostics] REACT_APP_GOOGLE_CLIENT_ID exists:", Boolean(GOOGLE_CLIENT_ID));
+        console.log("[Google Auth Diagnostics] Client ID:", GOOGLE_CLIENT_ID);
+        console.log("[Google Auth Diagnostics] Client ID length:", GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.length : 0);
+        console.log("[Google Auth Diagnostics] Matches newly created Client ID:", GOOGLE_CLIENT_ID === "561174262810-4fvv1hd22o5r7rqojisntfmrgokv3cm2.apps.googleusercontent.com");
+
         window.google.accounts.id.initialize({
           client_id: GOOGLE_CLIENT_ID,
           callback: handleGoogleCredentialResponse,
@@ -360,6 +377,12 @@ function Auth() {
             <button
               type="button"
               className="google-custom-btn"
+              onClick={() => {
+                if (!GOOGLE_CLIENT_ID) {
+                  setMessage("Google Sign-In is unavailable (Client ID not configured).");
+                  setMessageType("error");
+                }
+              }}
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" className="google-icon">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
