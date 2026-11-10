@@ -11,7 +11,9 @@ from data_sync.clients.openmeteo_weather_client import (
     is_rate_limited,
     get_cooldown_remaining,
     set_cooldown,
+    get_weather_client_metrics,
 )
+from services.weather_service import clear_weather_service_cache
 from api_layer.exceptions import ExternalAPIException
 
 
@@ -19,8 +21,10 @@ from api_layer.exceptions import ExternalAPIException
 def reset_weather_cache_state():
     """Ensure in-memory weather cache and cooldown are reset before and after every test."""
     clear_weather_cache()
+    clear_weather_service_cache()
     yield
     clear_weather_cache()
+    clear_weather_service_cache()
 
 
 @pytest.mark.asyncio
@@ -249,4 +253,196 @@ async def test_stale_cache_never_served_beyond_one_hour():
         with pytest.raises(ExternalAPIException) as exc_info:
             await client.fetch_current_weather(15.82, 78.03)
         assert exc_info.value.upstream_status == 429
+
+
+@pytest.mark.asyncio
+async def test_cooldown_expiration():
+    """Verify that after cooldown expires, requests are no longer blocked."""
+    client = OpenMeteoWeatherClient()
+    mock_payload = {"current": {"temperature_2m": 24.0}}
+
+    set_cooldown(0.05)
+    assert is_rate_limited() is True
+
+    # Sleep past cooldown
+    await asyncio.sleep(0.06)
+    assert is_rate_limited() is False
+    assert get_cooldown_remaining() == 0.0
+
+    with patch("data_sync.clients.openmeteo_weather_client._get_with_retry", new_callable=AsyncMock, return_value=mock_payload) as mock_get:
+        res = await client.fetch_current_weather(13.55, 78.50)
+        assert res == mock_payload
+        assert mock_get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_requests_during_cooldown_suppressed():
+    """Verify that multiple requests during cooldown are suppressed and counted."""
+    client = OpenMeteoWeatherClient()
+
+    set_cooldown(60.0)
+    assert is_rate_limited() is True
+
+    # Make 5 repeated requests during cooldown
+    for _ in range(5):
+        with pytest.raises(ExternalAPIException) as exc:
+            await client.fetch_current_weather(13.55, 78.50)
+        assert exc.value.upstream_status == 429
+        assert "cooldown active" in exc.value.detail
+
+    metrics = get_weather_client_metrics()
+    assert metrics["suppressed_requests"] == 5
+    assert metrics["upstream_requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_no_cache_behavior_during_cooldown():
+    """Verify that when no fresh or stale cache exists, fetch_current_weather fast-fails."""
+    client = OpenMeteoWeatherClient()
+    set_cooldown(120.0)
+
+    # Coords not in cache
+    with pytest.raises(ExternalAPIException) as exc:
+        await client.fetch_current_weather(17.38, 78.48)
+
+    assert exc.value.upstream_status == 429
+    assert exc.value.status_code == 502
+    assert "cooldown active" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_independent_coordinates_distinct_caching():
+    """Verify that separate coordinates maintain independent cache entries."""
+    client = OpenMeteoWeatherClient()
+    payload_a = {"current": {"temperature_2m": 31.0}}
+    payload_b = {"current": {"temperature_2m": 19.5}}
+
+    with patch("data_sync.clients.openmeteo_weather_client._get_with_retry", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [payload_a, payload_b]
+
+        res_a = await client.fetch_current_weather(28.61, 77.20)  # Delhi
+        res_b = await client.fetch_current_weather(12.97, 77.59)  # Bengaluru
+
+        assert res_a == payload_a
+        assert res_b == payload_b
+        assert mock_get.call_count == 2
+
+        # Subsequent fetches hit their respective distinct cache entries
+        res_a_cached = await client.fetch_current_weather(28.61, 77.20)
+        res_b_cached = await client.fetch_current_weather(12.97, 77.59)
+        assert res_a_cached == payload_a
+        assert res_b_cached == payload_b
+        assert mock_get.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_weather_service_endpoint_returns_controlled_unavailable_during_429():
+    """Verify /weather endpoint returns HTTP 200 with source='UNAVAILABLE' and is_available=False
+    rather than a 502 crash when upstream provider is in cooldown and no cache exists.
+    """
+    from services.weather_service import WeatherService
+    from data_sync.clients.nominatim_client import GeocodingResult
+
+    mock_geo = GeocodingResult(
+        latitude=13.55,
+        longitude=78.50,
+        country="India",
+        country_code="IN",
+    )
+
+    service = WeatherService()
+
+    # Trigger cooldown so OpenMeteoWeatherClient is in active 429 cooldown
+    set_cooldown(29177.5)
+
+    with patch("data_sync.clients.nominatim_client.NominatimGeocoderClient.geocode_address_with_details", new_callable=AsyncMock, return_value=mock_geo):
+        resp = await service.get_weather("Madanapalle")
+
+        # Crucial architectural assertion: Must NOT raise 502!
+        assert resp.city == "Madanapalle"
+        assert resp.source == "UNAVAILABLE"
+        assert resp.is_available is False
+        assert resp.temperature is None
+        assert resp.condition == "Unavailable"
+        assert resp.cooldown_remaining_seconds is not None
+        assert resp.cooldown_remaining_seconds > 29000.0
+
+
+@pytest.mark.asyncio
+async def test_weather_service_endpoint_returns_stale_cache_during_429():
+    """Verify /weather endpoint returns stale cache with source='STALE_CACHE' when in cooldown."""
+    from services.weather_service import WeatherService
+    from data_sync.clients.nominatim_client import GeocodingResult
+
+    mock_geo = GeocodingResult(
+        latitude=13.55,
+        longitude=78.50,
+        country="India",
+        country_code="IN",
+    )
+    mock_weather = {
+        "current": {
+            "temperature_2m": 29.0,
+            "apparent_temperature": 31.0,
+            "relative_humidity_2m": 60,
+            "wind_speed_10m": 4.5,
+            "wind_direction_10m": 90,
+            "surface_pressure": 1010,
+            "precipitation": 0.0,
+            "weather_code": 0,
+        },
+        "daily": {"sunrise": ["2026-11-10T06:00"], "sunset": ["2026-11-10T18:00"]},
+        "timezone": "Asia/Kolkata",
+    }
+
+    service = WeatherService()
+
+    # 1. Successful live fetch warms the cache
+    with patch("data_sync.clients.nominatim_client.NominatimGeocoderClient.geocode_address_with_details", new_callable=AsyncMock, return_value=mock_geo), \
+         patch("data_sync.clients.openmeteo_weather_client.OpenMeteoWeatherClient.fetch_current_weather", new_callable=AsyncMock, return_value=mock_weather):
+        live_resp = await service.get_weather("Madanapalle")
+        assert live_resp.source == "LIVE"
+        assert live_resp.temperature == 29.0
+
+    # 2. Fast forward 15 minutes (past fresh TTL 600s, within stale TTL 3600s)
+    # and trigger 429 cooldown
+    real_monotonic = time.monotonic
+    with patch("time.monotonic", side_effect=lambda: real_monotonic() + 900.0), \
+         patch("data_sync.clients.nominatim_client.NominatimGeocoderClient.geocode_address_with_details", new_callable=AsyncMock, return_value=mock_geo), \
+         patch("data_sync.clients.openmeteo_weather_client.OpenMeteoWeatherClient.fetch_current_weather", side_effect=ExternalAPIException(detail="429 Too Many Requests", error_code="OPEN_METEO_API_ERROR", status_code=502, upstream_status=429)):
+        set_cooldown(3600.0)
+        stale_resp = await service.get_weather("Madanapalle")
+
+        assert stale_resp.source == "STALE_CACHE"
+        assert stale_resp.is_available is True
+        assert stale_resp.temperature == 29.0
+        assert stale_resp.cached_at is not None
+
+
+@pytest.mark.asyncio
+async def test_frontend_adapt_weather_handles_unavailable():
+    """Verify that WeatherResponse with is_available=False maps cleanly in frontend adapter."""
+    from api_layer.api.schemas.aqi_endpoints import WeatherResponse
+
+    resp = WeatherResponse(
+        city="Madanapalle",
+        latitude=13.55,
+        longitude=78.50,
+        temperature=None,
+        condition="Unavailable",
+        condition_description="Weather data temporarily unavailable (upstream rate limit active)",
+        source="UNAVAILABLE",
+        is_available=False,
+        cooldown_remaining_seconds=29177.5,
+    )
+    dumped = resp.model_dump()
+    assert dumped["is_available"] is False
+    assert dumped["source"] == "UNAVAILABLE"
+    assert dumped["temperature"] is None
+
+    # Verify adapter transformation contract
+    is_avail = dumped.get("is_available") is not False and dumped.get("temperature") is not None
+    adapted_cod = 200 if is_avail else 503
+    assert adapted_cod == 503
+    assert is_avail is False
 

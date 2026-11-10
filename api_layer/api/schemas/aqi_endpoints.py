@@ -334,6 +334,12 @@ class WeatherResponse(BaseModel):
     # ── Provider Metadata ────────────────────────────────────────────────
     provider: str = Field(default="Open-Meteo", description="Weather data provider")
 
+    # ── Operational / Availability Metadata ──────────────────────────────
+    source: str = Field(default="LIVE", description="Weather data source: LIVE, CACHE, STALE_CACHE, or UNAVAILABLE")
+    is_available: bool = Field(default=True, description="Whether real-time weather metrics are currently available")
+    cached_at: Optional[str] = Field(default=None, description="ISO timestamp when cached meteorological data was acquired")
+    cooldown_remaining_seconds: Optional[float] = Field(default=None, description="Remaining upstream provider cooldown in seconds, if active")
+
     # ── Raw (for debugging / advanced consumers) ─────────────────────────
     raw_response: dict = Field(default_factory=dict, description="Raw JSON response from Open-Meteo Weather API")
 

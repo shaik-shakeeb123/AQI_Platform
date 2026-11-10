@@ -14,10 +14,16 @@
 export const adaptWeather = (res) => {
     if (!res) return null;
 
+    const isAvailable = res.is_available !== false && res.temperature !== null;
+
     return {
-        cod: 200,
+        cod: isAvailable ? 200 : 503,
         name: res.city,
         timezone: res.timezone || null,
+        source: res.source || (isAvailable ? "LIVE" : "UNAVAILABLE"),
+        is_available: isAvailable,
+        cached_at: res.cached_at || null,
+        cooldown_remaining: res.cooldown_remaining_seconds || 0,
         sys: {
             country: res.country_code || null,
             sunrise: res.sunrise_timestamp ?? null,
@@ -25,8 +31,8 @@ export const adaptWeather = (res) => {
         },
         weather: [
             {
-                main: res.condition || null,
-                description: res.condition_description || null,
+                main: res.condition || (isAvailable ? null : "Unavailable"),
+                description: res.condition_description || (isAvailable ? null : "Weather data temporarily unavailable"),
                 icon: res.condition_icon || null
             }
         ],

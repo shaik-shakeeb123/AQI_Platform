@@ -11,26 +11,29 @@ function WeatherWidget({
     const [weather, setWeather] = useState(null);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        if (!city && (lat == null || lon == null)) return;
+    const targetKey = city ? city.trim().toLowerCase() : (lat != null && lon != null ? `${Number(lat).toFixed(2)},${Number(lon).toFixed(2)}` : null);
 
+    useEffect(() => {
+        if (!targetKey) return;
+
+        let isMounted = true;
         const fetchWeather = async () => {
             try {
                 setLoading(true);
                 const data = city ? await getWeather(city) : await getWeatherByLocation(lat, lon);
+                if (!isMounted) return;
                 setWeather(data);
-                if (setWeatherCondition && data) {
-                    setWeatherCondition(
-                        data.weather?.[0]?.main || "Clear"
-                    );
+                if (setWeatherCondition) {
+                    const cond = data?.weather?.[0]?.main;
+                    setWeatherCondition(cond && cond !== "Unavailable" ? cond : "Clear");
                 }
             }
             catch (error) {
                 console.error("Weather Fetch Error:", error);
-                setWeather(null);
+                if (isMounted) setWeather(null);
             }
             finally {
-                setLoading(false);
+                if (isMounted) setLoading(false);
             }
         };
 
@@ -38,17 +41,15 @@ function WeatherWidget({
 
         const interval = setInterval(
             fetchWeather,
-            180000
+            300000
         );
 
-        return () => clearInterval(interval);
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
 
-    }, [
-        city,
-        lat,
-        lon,
-        setWeatherCondition
-    ]);
+    }, [targetKey, city, lat, lon, setWeatherCondition]);
 
 
 
@@ -95,7 +96,7 @@ function WeatherWidget({
 
 
 
-    if (!weather) {
+    if (!weather || weather.is_available === false || weather.main?.temp === null) {
 
         return (
 
@@ -107,9 +108,19 @@ function WeatherWidget({
 
                 </h2>
 
-                <div className="loading-text">
+                <div className="loading-text" style={{ padding: "16px", textAlign: "center" }}>
 
-                    Weather data unavailable
+                    <p style={{ margin: "0 0 6px 0", fontWeight: "600" }}>
+
+                        Weather data temporarily unavailable
+
+                    </p>
+
+                    <p style={{ margin: 0, fontSize: "0.85rem", opacity: 0.8 }}>
+
+                        Upstream provider rate limit in cooldown. Retrying automatically.
+
+                    </p>
 
                 </div>
 
@@ -158,6 +169,18 @@ function WeatherWidget({
                         {
 
                             weather.weather?.[0]?.description || "N/A"
+
+                        }
+
+                        {
+
+                            weather.source === "STALE_CACHE" &&
+
+                            <span style={{ display: "block", fontSize: "0.75rem", opacity: 0.8, color: "#f59e0b", marginTop: "4px" }}>
+
+                                🕒 Cached data ({weather.cached_at ? new Date(weather.cached_at).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "earlier"})
+
+                            </span>
 
                         }
 

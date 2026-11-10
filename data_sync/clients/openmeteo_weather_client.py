@@ -27,9 +27,10 @@ _RETRYABLE_STATUSES = {500, 502, 503, 504}
 _WEATHER_CACHE_MAX_SIZE = 1000
 _WEATHER_CACHE_TTL_SECS = 600.0   # 10 minutes fresh
 _WEATHER_STALE_TTL_SECS = 3600.0  # 1 hour stale retention
+_MAX_COOLDOWN_CAP = 86400.0       # 24 hours upper sanity cap
 
-# Cache structure: key -> (expires_at, stale_until, data_dict)
-_weather_cache: OrderedDict[str, tuple[float, float, dict]] = OrderedDict()
+# Cache structure: key -> (expires_at, stale_until, created_at, data_dict)
+_weather_cache: OrderedDict[str, tuple[float, float, float, dict]] = OrderedDict()
 
 # Concurrency locks partitioned by event loop for 100% lifecycle safety
 _sharded_locks: list[asyncio.Lock] | None = None
@@ -37,6 +38,33 @@ _locks_loop_id: int | None = None
 
 # Shared rate-limiting cooldown state
 _cooldown_until: float = 0.0
+
+# Production observability metrics
+_client_metrics: dict[str, Any] = {
+    "upstream_requests": 0,
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "stale_cache_hits": 0,
+    "suppressed_requests": 0,
+    "last_cooldown_reason": None,
+    "last_retry_after": None,
+}
+
+
+def get_weather_client_metrics() -> dict[str, Any]:
+    """Return a snapshot of current weather client operational metrics."""
+    return dict(_client_metrics)
+
+
+def reset_weather_client_metrics() -> None:
+    """Reset operational metrics (primarily for tests)."""
+    _client_metrics["upstream_requests"] = 0
+    _client_metrics["cache_hits"] = 0
+    _client_metrics["cache_misses"] = 0
+    _client_metrics["stale_cache_hits"] = 0
+    _client_metrics["suppressed_requests"] = 0
+    _client_metrics["last_cooldown_reason"] = None
+    _client_metrics["last_retry_after"] = None
 
 
 def _get_lock(key: str) -> asyncio.Lock:
@@ -65,7 +93,7 @@ def _parse_retry_after(header_val: Any, default: float = 60.0) -> float:
     # 1. Delay-seconds integer or float
     try:
         val = float(header_str)
-        return max(1.0, val)
+        return min(max(1.0, val), _MAX_COOLDOWN_CAP)
     except (ValueError, TypeError):
         pass
     # 2. HTTP-date (e.g. "Wed, 21 Oct 2026 07:28:00 GMT")
@@ -76,7 +104,7 @@ def _parse_retry_after(header_val: Any, default: float = 60.0) -> float:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             diff = (dt - now).total_seconds()
-            return max(1.0, diff)
+            return min(max(1.0, diff), _MAX_COOLDOWN_CAP)
     except Exception:
         pass
     return default
@@ -92,31 +120,54 @@ def get_cooldown_remaining() -> float:
     return max(0.0, _cooldown_until - time.monotonic())
 
 
-def set_cooldown(seconds: float) -> None:
-    """Extend provider cooldown period safely."""
+def set_cooldown(seconds: float, reason: str = "HTTP 429 Rate Limit") -> None:
+    """Extend provider cooldown period safely with validation and upper bound sanity cap."""
     global _cooldown_until
-    new_until = time.monotonic() + max(1.0, seconds)
+    try:
+        sec = float(seconds)
+        if sec <= 0.0:
+            sec = 60.0
+        elif sec > _MAX_COOLDOWN_CAP:
+            logger.warning(
+                "Clamping excessive cooldown seconds from %.1f to %.1f (reason: %s)",
+                sec, _MAX_COOLDOWN_CAP, reason,
+            )
+            sec = _MAX_COOLDOWN_CAP
+    except (ValueError, TypeError):
+        sec = 60.0
+
+    new_until = time.monotonic() + sec
     if new_until > _cooldown_until:
         _cooldown_until = new_until
+        _client_metrics["last_cooldown_reason"] = reason
+        _client_metrics["last_retry_after"] = sec
 
 
 def clear_weather_cache() -> None:
-    """Clear in-memory weather cache and reset cooldown (primarily for tests)."""
+    """Clear in-memory weather cache, reset cooldown, and clear metrics (primarily for tests)."""
     global _cooldown_until, _sharded_locks, _locks_loop_id
     _weather_cache.clear()
     _cooldown_until = 0.0
     _sharded_locks = None
     _locks_loop_id = None
+    reset_weather_client_metrics()
 
 
 def _get_from_cache(key: str) -> Optional[dict]:
     """Return fresh cached data if present and not expired."""
     now = time.monotonic()
     if key in _weather_cache:
-        expires_at, _, data = _weather_cache[key]
+        entry = _weather_cache[key]
+        expires_at = entry[0]
+        data = entry[-1]
+        created_at = entry[2] if len(entry) == 4 else entry[0] - _WEATHER_CACHE_TTL_SECS
         if now < expires_at:
             _weather_cache.move_to_end(key)
+            _client_metrics["cache_hits"] += 1
+            age = max(0.0, now - created_at)
+            logger.info("Open-Meteo Cache HIT | key=%s | age=%.1fs | source=CACHE", key, age)
             return data
+    _client_metrics["cache_misses"] += 1
     return None
 
 
@@ -124,9 +175,18 @@ def _get_stale_from_cache(key: str) -> Optional[dict]:
     """Return stale cached data if within stale retention window; evicts if permanently expired."""
     now = time.monotonic()
     if key in _weather_cache:
-        _, stale_until, data = _weather_cache[key]
+        entry = _weather_cache[key]
+        stale_until = entry[1]
+        data = entry[-1]
+        created_at = entry[2] if len(entry) == 4 else entry[0] - _WEATHER_CACHE_TTL_SECS
         if now < stale_until:
             _weather_cache.move_to_end(key)
+            _client_metrics["stale_cache_hits"] += 1
+            age = max(0.0, now - created_at)
+            logger.warning(
+                "Open-Meteo STALE Cache served | key=%s | age=%.1fs (max stale: %.0fs) | source=STALE_CACHE",
+                key, age, _WEATHER_STALE_TTL_SECS,
+            )
             return data
         else:
             # Permanently expired beyond 1 hour; purge from memory
@@ -135,11 +195,12 @@ def _get_stale_from_cache(key: str) -> Optional[dict]:
 
 
 def _save_to_cache(key: str, data: dict) -> None:
-    """Save payload to LRU cache with fresh and stale retention timestamps."""
+    """Save payload to LRU cache with fresh, stale retention, and creation timestamps."""
     now = time.monotonic()
     _weather_cache[key] = (
         now + _WEATHER_CACHE_TTL_SECS,
         now + _WEATHER_STALE_TTL_SECS,
+        now,
         data,
     )
     if len(_weather_cache) > _WEATHER_CACHE_MAX_SIZE:
@@ -165,9 +226,10 @@ async def _get_with_retry(url: str, params: dict, *, error_code: str, label: str
         # Fast-fail at start of EVERY attempt if in active cooldown
         cooldown = get_cooldown_remaining()
         if cooldown > 0:
+            _client_metrics["suppressed_requests"] += 1
             logger.warning(
-                "%s | lat=%s lon=%s | Skipped attempt %d due to active 429 cooldown (%.1fs remaining)",
-                label, lat, lon, attempt, cooldown,
+                "%s | lat=%s lon=%s | Suppressed upstream request #%d (cooldown active: %.1fs remaining) | reason=%s",
+                label, lat, lon, _client_metrics["suppressed_requests"], cooldown, _client_metrics.get("last_cooldown_reason"),
             )
             raise ExternalAPIException(
                 detail=f"{label}: HTTP 429 Too Many Requests. Upstream provider cooldown active ({cooldown:.1f}s remaining).",
@@ -178,15 +240,17 @@ async def _get_with_retry(url: str, params: dict, *, error_code: str, label: str
 
         try:
             client = _get_client()
+            _client_metrics["upstream_requests"] += 1
             response = await client.get(url, params=params)
 
             if response.status_code == 429:
                 last_status = 429
-                retry_after = _parse_retry_after(response.headers.get("Retry-After"), default=60.0)
-                set_cooldown(retry_after)
+                retry_after_raw = response.headers.get("Retry-After")
+                retry_after = _parse_retry_after(retry_after_raw, default=60.0)
+                set_cooldown(retry_after, reason=f"HTTP 429 Too Many Requests (Retry-After: {retry_after_raw})")
                 logger.warning(
-                    "%s | lat=%s lon=%s | Attempt %d/%d | HTTP 429 Too Many Requests | Cooldown applied for %.2fs",
-                    label, lat, lon, attempt, _MAX_RETRIES, retry_after,
+                    "%s | lat=%s lon=%s | Attempt %d/%d | HTTP 429 Too Many Requests | Retry-After=%s | Cooldown applied for %.2fs | Total Upstream=%d",
+                    label, lat, lon, attempt, _MAX_RETRIES, retry_after_raw, retry_after, _client_metrics["upstream_requests"],
                 )
                 # Break immediately to avoid burning aggressive retries against a rate-limiting provider
                 break
@@ -210,11 +274,12 @@ async def _get_with_retry(url: str, params: dict, *, error_code: str, label: str
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
                 last_status = 429
-                retry_after = _parse_retry_after(e.response.headers.get("Retry-After"), default=60.0)
-                set_cooldown(retry_after)
+                retry_after_raw = e.response.headers.get("Retry-After")
+                retry_after = _parse_retry_after(retry_after_raw, default=60.0)
+                set_cooldown(retry_after, reason=f"HTTP 429 Too Many Requests (Retry-After: {retry_after_raw})")
                 logger.warning(
-                    "%s | lat=%s lon=%s | Attempt %d/%d | HTTP 429 Too Many Requests | Cooldown applied for %.2fs",
-                    label, lat, lon, attempt, _MAX_RETRIES, retry_after,
+                    "%s | lat=%s lon=%s | Attempt %d/%d | HTTP 429 Too Many Requests | Retry-After=%s | Cooldown applied for %.2fs | Total Upstream=%d",
+                    label, lat, lon, attempt, _MAX_RETRIES, retry_after_raw, retry_after, _client_metrics["upstream_requests"],
                 )
                 break
 
@@ -304,7 +369,12 @@ class OpenMeteoWeatherClient:
                         latitude, longitude,
                     )
                     return stale
+                _client_metrics["suppressed_requests"] += 1
                 cooldown_sec = get_cooldown_remaining()
+                logger.warning(
+                    "Open-Meteo Weather API | coords=(%s, %s) | Suppressed request #%d (cooldown active: %.1fs remaining) | reason=%s",
+                    latitude, longitude, _client_metrics["suppressed_requests"], cooldown_sec, _client_metrics.get("last_cooldown_reason"),
+                )
                 raise ExternalAPIException(
                     detail=f"Open-Meteo Weather API: HTTP 429 Too Many Requests. Upstream provider cooldown active ({cooldown_sec:.1f}s remaining).",
                     error_code="OPEN_METEO_API_ERROR",
@@ -402,7 +472,12 @@ class OpenMeteoWeatherClient:
                         latitude, longitude,
                     )
                     return stale
+                _client_metrics["suppressed_requests"] += 1
                 cooldown_sec = get_cooldown_remaining()
+                logger.warning(
+                    "Open-Meteo Hourly Weather API | coords=(%s, %s) | Suppressed request #%d (cooldown active: %.1fs remaining) | reason=%s",
+                    latitude, longitude, _client_metrics["suppressed_requests"], cooldown_sec, _client_metrics.get("last_cooldown_reason"),
+                )
                 raise ExternalAPIException(
                     detail=f"Open-Meteo Hourly Weather API: HTTP 429 Too Many Requests. Upstream provider cooldown active ({cooldown_sec:.1f}s remaining).",
                     error_code="OPEN_METEO_API_ERROR",
