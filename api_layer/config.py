@@ -97,3 +97,8 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return a cached Settings instance."""
     return Settings()
+
+
+def clear_settings_cache() -> None:
+    """Clear the cached Settings instance to allow re-reading environment variables."""
+    get_settings.cache_clear()

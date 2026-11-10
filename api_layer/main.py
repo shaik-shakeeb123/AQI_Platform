@@ -6,6 +6,7 @@ includes API routers, and configures middleware.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import joblib
 from contextlib import asynccontextmanager
@@ -42,7 +43,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     teardown after shutdown signal.
     """
     logger.info("Starting %s …", settings.APP_NAME)
-    
+
+    # ── Google OAuth Startup Diagnostics ────────────────────────────────────
+    # Diagnostic logging to verify Google OAuth configuration on deployment
+    # without exposing sensitive secrets or complete credentials.
+    current_settings = get_settings()
+    google_cid = current_settings.GOOGLE_CLIENT_ID or ""
+    cid_hash = (
+        hashlib.sha256(google_cid.encode("utf-8")).hexdigest()
+        if google_cid
+        else "none"
+    )
+    expected_cid = "561174262810-4fvv1hd22o5r7rqojisntfmrgokv3cm2.apps.googleusercontent.com"
+    cid_source = "os.environ" if "GOOGLE_CLIENT_ID" in os.environ else ".env file"
+    logger.info(
+        "[Startup Configuration] GOOGLE_CLIENT_ID configured: %s, length: %d, sha256: %s, matches_expected: %s, source: %s",
+        bool(google_cid),
+        len(google_cid),
+        cid_hash,
+        google_cid == expected_cid,
+        cid_source,
+    )
 
     # Schema is managed exclusively via Alembic migrations.
 
